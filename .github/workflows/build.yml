@@ -40,6 +40,29 @@ jobs:
           }
           Write-Host "WDK installed successfully."
 
+          # Set DDK_INC_PATH and DDK_LIB_PATH so the vcxproj IncludePath/LibraryPath
+          # properties resolve correctly. The WindowsKernelModeDriver10.0 toolset's
+          # VS extension does not reliably set these legacy variables in CI.
+          $wdkRoot    = "C:\Program Files (x86)\Windows Kits\10"
+          $incBase    = "$wdkRoot\Include"
+          $verDirs = Get-ChildItem $incBase -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+          if (-not $verDirs) {
+            throw "No WDK version directories found under $incBase. WDK may not have installed correctly."
+          }
+          $ver = $verDirs[0].Name
+          Write-Host "Detected WDK include version: $ver"
+
+          $kmInc     = "$incBase\$ver\km"
+          $sharedInc = "$incBase\$ver\shared"
+          if (-not (Test-Path $kmInc))     { throw "WDK km include directory not found: $kmInc" }
+          if (-not (Test-Path $sharedInc)) { throw "WDK shared include directory not found: $sharedInc" }
+          "DDK_INC_PATH=$kmInc;$sharedInc" | Add-Content $env:GITHUB_ENV
+          Write-Host "Set DDK_INC_PATH=$kmInc;$sharedInc"
+
+          $libBase = "$wdkRoot\Lib\$ver\km"
+          "DDK_LIB_PATH=$libBase\x86;$libBase\x64" | Add-Content $env:GITHUB_ENV
+          Write-Host "Set DDK_LIB_PATH=$libBase\x86;$libBase\x64"
+
       - name: Build x86
         run: msbuild eram.sln /p:Configuration=Release /p:Platform=x86 /m /t:Build /v:minimal
 
