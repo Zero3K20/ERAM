@@ -21,22 +21,6 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Install Windows Driver Kit
-        shell: powershell
-        run: |
-          Write-Host "Downloading WDK installer..."
-          $url = "https://go.microsoft.com/fwlink/?linkid=2196230"
-          $out = "$env:TEMP\wdksetup.exe"
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          (New-Object Net.WebClient).DownloadFile($url, $out)
-          Write-Host "Installing WDK (this may take several minutes)..."
-          $p = Start-Process $out -ArgumentList "/quiet /norestart /features +" -PassThru -Wait
-          # Exit code 0 = success, 3010 = success but reboot required
-          if ($p.ExitCode -notin @(0, 3010)) {
-            throw "WDK installation failed with exit code: $($p.ExitCode)"
-          }
-          Write-Host "WDK installation complete (exit code: $($p.ExitCode))"
-
       - name: Build x86
         run: msbuild eram.sln /p:Configuration=Release /p:Platform=x86 /m /t:Build /v:minimal
 
