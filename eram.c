@@ -817,7 +817,7 @@ NTSTATUS ReadPool(
 {
 	/* local variables */
 	PUCHAR lpSrc;
-	lpSrc = (PUCHAR)((PBYTE)pEramExt->pPageBase + (ULONG)pIrpSp->Parameters.Read.ByteOffset.QuadPart);
+	lpSrc = (PUCHAR)((PBYTE)pEramExt->pPageBase + (SIZE_T)pIrpSp->Parameters.Read.ByteOffset.QuadPart);
 	RtlCopyBytes(lpDest, lpSrc, pIrpSp->Parameters.Read.Length);
 	return STATUS_SUCCESS;
 }
@@ -843,7 +843,7 @@ NTSTATUS WritePool(
 {
 	/* local variables */
 	PUCHAR lpDest;
-	lpDest = (PUCHAR)((PBYTE)pEramExt->pPageBase + (ULONG)pIrpSp->Parameters.Write.ByteOffset.QuadPart);
+	lpDest = (PUCHAR)((PBYTE)pEramExt->pPageBase + (SIZE_T)pIrpSp->Parameters.Write.ByteOffset.QuadPart);
 	RtlCopyBytes(lpDest, lpSrc, pIrpSp->Parameters.Write.Length);
 	return STATUS_SUCCESS;
 }
@@ -879,9 +879,9 @@ NTSTATUS ExtRead1(
 	ExAcquireFastMutex(&(pEramExt->FastMutex));
 	uLen = pIrpSp->Parameters.Read.Length;	/* Transfer size (a multiples of sector size) */
 	/* Calculate the sector number */
-	ebx = pIrpSp->Parameters.Read.ByteOffset.LowPart >> SECTOR_LOG2;
+	ebx = (DWORD)(pIrpSp->Parameters.Read.ByteOffset.QuadPart >> SECTOR_LOG2);
 	/* Calculate the memory position */
-	uMemAdr = pEramExt->uExternalStart + pIrpSp->Parameters.Read.ByteOffset.QuadPart;
+	uMemAdr = pEramExt->uExternalStart + (ULONGPTR)pIrpSp->Parameters.Read.ByteOffset.QuadPart;
 	ntStat = STATUS_SUCCESS;
 	while (uLen != 0)
 	{
@@ -942,9 +942,9 @@ NTSTATUS ExtWrite1(
 	ExAcquireFastMutex(&(pEramExt->FastMutex));
 	uLen = pIrpSp->Parameters.Write.Length;
 	/* Calculate the sector number */
-	ebx = pIrpSp->Parameters.Write.ByteOffset.LowPart >> SECTOR_LOG2;
+	ebx = (DWORD)(pIrpSp->Parameters.Write.ByteOffset.QuadPart >> SECTOR_LOG2);
 	/* Calculate the memory position */
-	uMemAdr = pEramExt->uExternalStart + pIrpSp->Parameters.Write.ByteOffset.LowPart;
+	uMemAdr = pEramExt->uExternalStart + (ULONGPTR)pIrpSp->Parameters.Write.ByteOffset.QuadPart;
 	ntStat = STATUS_SUCCESS;
 	while (uLen != 0)
 	{
@@ -1293,7 +1293,7 @@ NTSTATUS ExtFileRead1(
 	ASSERT(pEramExt != NULL);
 	uLen = pIrpSp->Parameters.Read.Length;	/* Transfer size (a multiples of sector size) */
 	/* Calculate the sector number */
-	ebx = pIrpSp->Parameters.Read.ByteOffset.LowPart >> SECTOR_LOG2;
+	ebx = (DWORD)(pIrpSp->Parameters.Read.ByteOffset.QuadPart >> SECTOR_LOG2);
 	ntStat = STATUS_SUCCESS;
 	while (uLen != 0)
 	{
@@ -1342,7 +1342,7 @@ NTSTATUS ExtFileWrite1(
 	ASSERT(pEramExt != NULL);
 	uLen = pIrpSp->Parameters.Write.Length;
 	/* Calculate the sector number */
-	ebx = pIrpSp->Parameters.Write.ByteOffset.LowPart >> SECTOR_LOG2;
+	ebx = (DWORD)(pIrpSp->Parameters.Write.ByteOffset.QuadPart >> SECTOR_LOG2);
 	ntStat = STATUS_SUCCESS;
 	while (uLen != 0)
 	{
