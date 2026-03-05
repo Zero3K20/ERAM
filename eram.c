@@ -2003,20 +2003,28 @@ DEVICE_TYPE CheckSwapable(
  )
 {
 	/* local variables */
-	RTL_QUERY_REGISTRY_TABLE	ParamTable[2];
+	RTL_QUERY_REGISTRY_TABLE	ParamTable[3];
 	ULONG			Option,		defOption = 0;
+#define ERAM_OPT_NOT_PRESENT	(0xFFFFFFFFUL)
+	ULONG			Swapable,	defSwapable = ERAM_OPT_NOT_PRESENT;
 	NTSTATUS		ntStat;
 	ERAM_OPTFLAG	uOptflag;
 	KdPrint(("Eram CheckSwapable start\n"));
 	/* registry confirmation area initialization */
 	RtlZeroBytes(&(ParamTable[0]), sizeof(ParamTable));
-	/* collective inquiry area initialization (the last one is NULL) */
+	/* Query both the combined Option key and the individual Swapable key */
 	ParamTable[0].Flags = RTL_QUERY_REGISTRY_DIRECT;
 	ParamTable[0].DefaultType = REG_DWORD;
 	ParamTable[0].DefaultLength = sizeof(ULONG);
 	ParamTable[0].Name = (PWSTR)L"Option";
 	ParamTable[0].EntryContext = &Option;
 	ParamTable[0].DefaultData = &defOption;
+	ParamTable[1].Flags = RTL_QUERY_REGISTRY_DIRECT;
+	ParamTable[1].DefaultType = REG_DWORD;
+	ParamTable[1].DefaultLength = sizeof(ULONG);
+	ParamTable[1].Name = (PWSTR)L"Swapable";
+	ParamTable[1].EntryContext = &Swapable;
+	ParamTable[1].DefaultData = &defSwapable;
 	/* registry values inquiry */
 	ntStat = RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE | RTL_REGISTRY_OPTIONAL, pRegParam->Buffer, &(ParamTable[0]), NULL, NULL);
 	if (ntStat != STATUS_SUCCESS)	/* failed */
@@ -2024,8 +2032,15 @@ DEVICE_TYPE CheckSwapable(
 		KdPrint(("Eram Warning:RtlQueryRegistryValues failed\n"));
 		/* Adapt the default value */
 		Option = defOption;
+		Swapable = defSwapable;
 	}
 	uOptflag.dwOptflag = Option;
+	/* If individual Swapable key is present (not sentinel), it takes precedence */
+	if (Swapable != ERAM_OPT_NOT_PRESENT)
+	{
+		uOptflag.Bits.Swapable = (Swapable != 0) ? 1 : 0;
+	}
+#undef ERAM_OPT_NOT_PRESENT
 	if (uOptflag.Bits.Swapable != 0)		/* Swappable settings */
 	{
 		KdPrint(("Eram CheckSwapable end, local disk\n"));
@@ -2127,13 +2142,22 @@ VOID CheckSwitch(
 	ULONG			Option,			defOption = 0;
 	ULONG			Page, 			defPage = DISKMINPAGE;
 	ULONG			ExtStart,		defExtStart = 0;
+	/* Individual option keys — use ERAM_OPT_NOT_PRESENT as "key absent" sentinel */
+#define ERAM_OPT_NOT_PRESENT	(0xFFFFFFFFUL)
+	ULONG			OptNonPaged,		defOptNonPaged = ERAM_OPT_NOT_PRESENT;
+	ULONG			OptExternal,		defOptExternal = ERAM_OPT_NOT_PRESENT;
+	ULONG			OptSkipExtCheck,	defOptSkipExtCheck = ERAM_OPT_NOT_PRESENT;
+	ULONG			OptSwapable,		defOptSwapable = ERAM_OPT_NOT_PRESENT;
+	ULONG			OptSkipReport,		defOptSkipReport = ERAM_OPT_NOT_PRESENT;
+	ULONG			OptMakeTemp,		defOptMakeTemp = ERAM_OPT_NOT_PRESENT;
+	ERAM_OPTFLAG	uOptWork;
 	UINT			loopi;
 	ULONGLONG		ulPageT;
 	NTSTATUS		ntStat;
 	BOOLEAN			bDefault;
 	KdPrint(("Eram CheckSwitch start\n"));
 	bDefault = TRUE;
-	#define	REGOPTNUM	(8)
+	#define	REGOPTNUM	(14)
 	#define	REGOPTSIZE	(REGOPTNUM * sizeof(*pParamTable))
 	/* Allocate the memory for inquiry */
 	pParamTable = ExAllocatePool(PagedPool, REGOPTSIZE);
@@ -2170,6 +2194,25 @@ VOID CheckSwitch(
 		pParamTable[6].Name = (PWSTR)L"ExtStart";
 		pParamTable[6].EntryContext = &ExtStart;
 		pParamTable[6].DefaultData = &defExtStart;
+		/* Individual option keys */
+		pParamTable[7].Name = (PWSTR)L"NonPaged";
+		pParamTable[7].EntryContext = &OptNonPaged;
+		pParamTable[7].DefaultData = &defOptNonPaged;
+		pParamTable[8].Name = (PWSTR)L"External";
+		pParamTable[8].EntryContext = &OptExternal;
+		pParamTable[8].DefaultData = &defOptExternal;
+		pParamTable[9].Name = (PWSTR)L"SkipExternalCheck";
+		pParamTable[9].EntryContext = &OptSkipExtCheck;
+		pParamTable[9].DefaultData = &defOptSkipExtCheck;
+		pParamTable[10].Name = (PWSTR)L"Swapable";
+		pParamTable[10].EntryContext = &OptSwapable;
+		pParamTable[10].DefaultData = &defOptSwapable;
+		pParamTable[11].Name = (PWSTR)L"SkipReportUsage";
+		pParamTable[11].EntryContext = &OptSkipReport;
+		pParamTable[11].DefaultData = &defOptSkipReport;
+		pParamTable[12].Name = (PWSTR)L"MakeTempDir";
+		pParamTable[12].EntryContext = &OptMakeTemp;
+		pParamTable[12].DefaultData = &defOptMakeTemp;
 		bDefault = FALSE;
 		/* registry values collective inquiry */
 		ntStat = RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE | RTL_REGISTRY_OPTIONAL, pRegParam->Buffer, pParamTable, NULL, NULL);
@@ -2190,7 +2233,30 @@ VOID CheckSwitch(
 		Option = defOption;
 		Page = defPage;
 		ExtStart = defExtStart;
+		OptNonPaged = defOptNonPaged;
+		OptExternal = defOptExternal;
+		OptSkipExtCheck = defOptSkipExtCheck;
+		OptSwapable = defOptSwapable;
+		OptSkipReport = defOptSkipReport;
+		OptMakeTemp = defOptMakeTemp;
 	}
+	/* If individual option keys are present (not sentinel), override the corresponding
+	   bits in Option using the ERAM_OPTFLAG union for type-safe bit access. */
+	uOptWork.dwOptflag = Option;
+	if (OptNonPaged != ERAM_OPT_NOT_PRESENT)
+		uOptWork.Bits.NonPaged = (OptNonPaged != 0) ? 1 : 0;
+	if (OptExternal != ERAM_OPT_NOT_PRESENT)
+		uOptWork.Bits.External = (OptExternal != 0) ? 1 : 0;
+	if (OptSkipExtCheck != ERAM_OPT_NOT_PRESENT)
+		uOptWork.Bits.SkipExternalCheck = (OptSkipExtCheck != 0) ? 1 : 0;
+	if (OptSwapable != ERAM_OPT_NOT_PRESENT)
+		uOptWork.Bits.Swapable = (OptSwapable != 0) ? 1 : 0;
+	if (OptSkipReport != ERAM_OPT_NOT_PRESENT)
+		uOptWork.Bits.SkipReportUsage = (OptSkipReport != 0) ? 1 : 0;
+	if (OptMakeTemp != ERAM_OPT_NOT_PRESENT)
+		uOptWork.Bits.MakeTempDir = (OptMakeTemp != 0) ? 1 : 0;
+	Option = uOptWork.dwOptflag;
+#undef ERAM_OPT_NOT_PRESENT
 	#undef	REGOPTNUM
 	#undef	REGOPTSIZE
 	/* Allocation unit check */
