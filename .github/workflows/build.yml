@@ -1,0 +1,114 @@
+name: Build ERAM Driver
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install Windows Driver Kit
+        shell: powershell
+        run: |
+          Write-Host "Downloading WDK installer..."
+          $url = "https://go.microsoft.com/fwlink/?linkid=2196230"
+          $out = "$env:TEMP\wdksetup.exe"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          (New-Object Net.WebClient).DownloadFile($url, $out)
+          Write-Host "Installing WDK (this may take several minutes)..."
+          $p = Start-Process $out -ArgumentList "/quiet /norestart /features +" -PassThru -Wait
+          # Exit code 0 = success, 3010 = success but reboot required
+          if ($p.ExitCode -notin @(0, 3010)) {
+            throw "WDK installation failed with exit code: $($p.ExitCode)"
+          }
+          Write-Host "WDK installation complete (exit code: $($p.ExitCode))"
+
+      - name: Build x86
+        run: msbuild eram.sln /p:Configuration=Release /p:Platform=x86 /m /t:Build /v:minimal
+
+      - name: Build x64
+        run: msbuild eram.sln /p:Configuration=Release /p:Platform=x64 /m /t:Build /v:minimal
+
+      - name: Create test signing certificate
+        shell: powershell
+        run: |
+          # Generate a random password for the PFX export and pass it to subsequent steps
+          $pfxPwd = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 32 | ForEach-Object { [char]$_ })
+          "PFX_PASSWORD=$pfxPwd" | Add-Content $env:GITHUB_ENV
+
+          $cert = New-SelfSignedCertificate `
+            -Type CodeSigning `
+            -Subject "CN=ERAM Test" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -KeyAlgorithm RSA `
+            -KeyLength 2048 `
+            -HashAlgorithm SHA256 `
+            -NotAfter (Get-Date).AddYears(10) `
+            -KeyUsage DigitalSignature
+          $pwd = ConvertTo-SecureString $pfxPwd -AsPlainText -Force
+          Export-PfxCertificate -Cert $cert -FilePath "$env:RUNNER_TEMP\test.pfx" -Password $pwd | Out-Null
+          Write-Host "Test certificate created. Thumbprint: $($cert.Thumbprint)"
+
+      - name: Sign drivers
+        shell: powershell
+        run: |
+          # Locate the latest signtool from the pre-installed Windows SDK
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+                       Where-Object { $_.Directory.Name -eq "x64" } |
+                       Sort-Object FullName -Descending |
+                       Select-Object -First 1).FullName
+          if (-not $signtool) { throw "signtool.exe not found" }
+          Write-Host "Using signtool: $signtool"
+
+          $pfx = "$env:RUNNER_TEMP\test.pfx"
+          $pfxPwd = $env:PFX_PASSWORD
+
+          Write-Host "Signing x86 driver..."
+          & $signtool sign /fd SHA256 /f $pfx /p $pfxPwd "Release\x86\eram.sys"
+          if ($LASTEXITCODE -ne 0) { throw "Signing x86 driver failed" }
+
+          Write-Host "Signing x64 driver..."
+          & $signtool sign /fd SHA256 /f $pfx /p $pfxPwd "Release\x64\eram.sys"
+          if ($LASTEXITCODE -ne 0) { throw "Signing x64 driver failed" }
+
+          Write-Host "Both drivers signed successfully."
+
+      - name: Package drivers
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          foreach ($arch in "x86", "x64") {
+            $pkg = "dist\eram-$arch"
+            New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+            Copy-Item "Release\$arch\eram.sys" $pkg
+            Copy-Item install.bat  $pkg
+            Copy-Item uninstall.bat $pkg
+            Compress-Archive -Path "$pkg\*" -DestinationPath "dist\eram-$arch.zip" -Force
+            Write-Host "Created: dist\eram-$arch.zip"
+          }
+
+      - name: Upload x86 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: eram-x86
+          path: dist/eram-x86.zip
+
+      - name: Upload x64 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: eram-x64
+          path: dist/eram-x64.zip
