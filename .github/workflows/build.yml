@@ -45,7 +45,11 @@ jobs:
           # VS extension does not reliably set these legacy variables in CI.
           $wdkRoot    = "C:\Program Files (x86)\Windows Kits\10"
           $incBase    = "$wdkRoot\Include"
-          $verDirs = Get-ChildItem $incBase -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+          # Filter to version-number directories only (e.g. 10.0.26100.0) to avoid
+          # non-version subdirs like 'wdf' being picked up by a descending sort.
+          $verDirs = Get-ChildItem $incBase -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d+\.' } |
+            Sort-Object Name -Descending
           if (-not $verDirs) {
             throw "No WDK version directories found under $incBase. WDK may not have installed correctly."
           }
