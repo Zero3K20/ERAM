@@ -542,9 +542,9 @@ NTSTATUS EramReadWrite(
 		/* Set status */
 		pIrp->IoStatus.Status = ntStat;
 		/* I/O complete */
-		IoCompleteRequest(pIrp, IO_NO_INCREMENT);
+		IoCompleteRequest(pIrp, IO_DISK_INCREMENT);
 	}
-	//KdPrint(("EramReadWrite end\n"));
+	//KdPrint(("EramReadWrite end\n"));;
 	return ntStat;
 }
 
@@ -869,8 +869,8 @@ NTSTATUS ExtRead1(
 {
 	/* local variables */
 	PUCHAR	lpSrc;
-	UINT	uLen;
-	DWORD	eax, ebx;
+	UINT	uLen, copyLen;
+	DWORD	ebx, offsetInBank, sectorsInBank, bankMapAdr;
 	NTSTATUS ntStat;
 	SIZE_T	uMemAdr;
 	ASSERT(pEramExt->uExternalStart != 0);
@@ -890,19 +890,27 @@ NTSTATUS ExtRead1(
 			ntStat = STATUS_DISK_CORRUPT_ERROR;
 			break;
 		}
-		/* 64KB allocation */
-		if (ExtNext1(pEramExt, &eax, &ebx) == FALSE)
+		/* Map the 64KB bank containing the current sector */
+		bankMapAdr = (ebx >> EXT_PAGE_SEC_LOG2) << EXT_PAGE_SIZE_LOG2;
+		if (ExtMap(pEramExt, bankMapAdr) == FALSE)
 		{
-			EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "ExtNext1");
+			EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "ExtMap");
 			ntStat = STATUS_DISK_CORRUPT_ERROR;
 			break;
 		}
-		lpSrc = (PUCHAR)((pEramExt->pExtPage + eax)); //(ULONG)
-		/* data transfer */
-		RtlCopyBytes(lpDest, lpSrc, SECTOR);
-		lpDest += SECTOR;
-		uLen -= SECTOR;
-		uMemAdr += SECTOR;
+		/* Calculate byte offset within the current bank and remaining bytes in this bank */
+		offsetInBank = (ebx & (EXT_PAGE_SECTOR - 1)) << SECTOR_LOG2;
+		sectorsInBank = EXT_PAGE_SECTOR - (ebx & (EXT_PAGE_SECTOR - 1));
+		copyLen = sectorsInBank * SECTOR;
+		if (copyLen > uLen)
+			copyLen = uLen;
+		/* data transfer: copy all contiguous sectors in this bank at once */
+		lpSrc = pEramExt->pExtPage + offsetInBank;
+		RtlCopyBytes(lpDest, lpSrc, copyLen);
+		lpDest += copyLen;
+		uLen -= copyLen;
+		uMemAdr += copyLen;
+		ebx += copyLen >> SECTOR_LOG2;
 	}
 	/* Unmap */
 	ExtUnmap(pEramExt);
@@ -932,8 +940,8 @@ NTSTATUS ExtWrite1(
 {
 	/* local variables */
 	PUCHAR lpDest;
-	UINT	uLen;
-	DWORD	eax, ebx;
+	UINT	uLen, copyLen;
+	DWORD	ebx, offsetInBank, sectorsInBank, bankMapAdr;
 	NTSTATUS ntStat;
 	ULONGPTR uMemAdr;
 	ASSERT(pEramExt->uExternalStart != 0);
@@ -953,19 +961,27 @@ NTSTATUS ExtWrite1(
 			ntStat = STATUS_DISK_CORRUPT_ERROR;
 			break;
 		}
-		/* 64KB allocation */
-		if (ExtNext1(pEramExt, &eax, &ebx) == FALSE)
+		/* Map the 64KB bank containing the current sector */
+		bankMapAdr = (ebx >> EXT_PAGE_SEC_LOG2) << EXT_PAGE_SIZE_LOG2;
+		if (ExtMap(pEramExt, bankMapAdr) == FALSE)
 		{
-			EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "ExtNext1");
+			EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "ExtMap");
 			ntStat = STATUS_DISK_CORRUPT_ERROR;
 			break;
 		}
-		lpDest = (PUCHAR)((pEramExt->pExtPage + eax)); //(ULONG)
-		/* data transfer */
-		RtlCopyBytes(lpDest, lpSrc, SECTOR);
-		lpSrc += SECTOR;
-		uLen -= SECTOR;
-		uMemAdr += SECTOR;
+		/* Calculate byte offset within the current bank and remaining bytes in this bank */
+		offsetInBank = (ebx & (EXT_PAGE_SECTOR - 1)) << SECTOR_LOG2;
+		sectorsInBank = EXT_PAGE_SECTOR - (ebx & (EXT_PAGE_SECTOR - 1));
+		copyLen = sectorsInBank * SECTOR;
+		if (copyLen > uLen)
+			copyLen = uLen;
+		/* data transfer: copy all contiguous sectors in this bank at once */
+		lpDest = pEramExt->pExtPage + offsetInBank;
+		RtlCopyBytes(lpDest, lpSrc, copyLen);
+		lpSrc += copyLen;
+		uLen -= copyLen;
+		uMemAdr += copyLen;
+		ebx += copyLen >> SECTOR_LOG2;
 	}
 	/* Unmap */
 	ExtUnmap(pEramExt);
@@ -1287,8 +1303,8 @@ NTSTATUS ExtFileRead1(
 {
 	/* local variables */
 	PUCHAR	lpSrc;
-	UINT	uLen;
-	DWORD	eax, ebx;
+	UINT	uLen, copyLen;
+	DWORD	ebx, offsetInBank, sectorsInBank, bankMapAdr;
 	NTSTATUS ntStat;
 	ASSERT(pEramExt != NULL);
 	uLen = pIrpSp->Parameters.Read.Length;	/* Transfer size (a multiples of sector size) */
@@ -1297,18 +1313,27 @@ NTSTATUS ExtFileRead1(
 	ntStat = STATUS_SUCCESS;
 	while (uLen != 0)
 	{
-		/* 64KB allocation */
-		if (ExtFileNext1(pEramExt, &eax, &ebx) == FALSE)
+		/* Map the 64KB bank containing the current sector */
+		bankMapAdr = (ebx >> EXT_PAGE_SEC_LOG2) << EXT_PAGE_SIZE_LOG2;
+		if (ExtFileMap(pEramExt, bankMapAdr) == FALSE)
 		{
+			KdPrint(("Eram ExtFileMap failed, MapAdr=0x%x, sector=0x%x, SizeSec=0x%x, SizeBytes=0x%x\n", bankMapAdr, ebx, pEramExt->uAllSector, (pEramExt->uSizeTotal << PAGE_SIZE_LOG2)));
 			EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "ExtFileNext1");
 			ntStat = STATUS_DISK_CORRUPT_ERROR;
 			break;
 		}
-		lpSrc = (PUCHAR)((pEramExt->pExtPage + eax)); //(ULONG)
-		/* data transfer */
-		RtlCopyBytes(lpDest, lpSrc, SECTOR);
-		lpDest += SECTOR;
-		uLen -= SECTOR;
+		/* Calculate byte offset within the current bank and remaining bytes in this bank */
+		offsetInBank = (ebx & (EXT_PAGE_SECTOR - 1)) << SECTOR_LOG2;
+		sectorsInBank = EXT_PAGE_SECTOR - (ebx & (EXT_PAGE_SECTOR - 1));
+		copyLen = sectorsInBank * SECTOR;
+		if (copyLen > uLen)
+			copyLen = uLen;
+		/* data transfer: copy all contiguous sectors in this bank at once */
+		lpSrc = pEramExt->pExtPage + offsetInBank;
+		RtlCopyBytes(lpDest, lpSrc, copyLen);
+		lpDest += copyLen;
+		uLen -= copyLen;
+		ebx += copyLen >> SECTOR_LOG2;
 	}
 	/* Unmap */
 	ExtFileUnmap(pEramExt);
@@ -1336,8 +1361,8 @@ NTSTATUS ExtFileWrite1(
 {
 	/* local variables */
 	PUCHAR lpDest;
-	UINT	uLen;
-	DWORD	eax, ebx;
+	UINT	uLen, copyLen;
+	DWORD	ebx, offsetInBank, sectorsInBank, bankMapAdr;
 	NTSTATUS ntStat;
 	ASSERT(pEramExt != NULL);
 	uLen = pIrpSp->Parameters.Write.Length;
@@ -1346,18 +1371,27 @@ NTSTATUS ExtFileWrite1(
 	ntStat = STATUS_SUCCESS;
 	while (uLen != 0)
 	{
-		/* 64KB allocation */
-		if (ExtFileNext1(pEramExt, &eax, &ebx) == FALSE)
+		/* Map the 64KB bank containing the current sector */
+		bankMapAdr = (ebx >> EXT_PAGE_SEC_LOG2) << EXT_PAGE_SIZE_LOG2;
+		if (ExtFileMap(pEramExt, bankMapAdr) == FALSE)
 		{
+			KdPrint(("Eram ExtFileMap failed, MapAdr=0x%x, sector=0x%x, SizeSec=0x%x, SizeBytes=0x%x\n", bankMapAdr, ebx, pEramExt->uAllSector, (pEramExt->uSizeTotal << PAGE_SIZE_LOG2)));
 			EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "ExtFileNext1");
 			ntStat = STATUS_DISK_CORRUPT_ERROR;
 			break;
 		}
-		lpDest = (PUCHAR)((pEramExt->pExtPage + eax)); //(ULONG)
-		/* data transfer */
-		RtlCopyBytes(lpDest, lpSrc, SECTOR);
-		lpSrc += SECTOR;
-		uLen -= SECTOR;
+		/* Calculate byte offset within the current bank and remaining bytes in this bank */
+		offsetInBank = (ebx & (EXT_PAGE_SECTOR - 1)) << SECTOR_LOG2;
+		sectorsInBank = EXT_PAGE_SECTOR - (ebx & (EXT_PAGE_SECTOR - 1));
+		copyLen = sectorsInBank * SECTOR;
+		if (copyLen > uLen)
+			copyLen = uLen;
+		/* data transfer: copy all contiguous sectors in this bank at once */
+		lpDest = pEramExt->pExtPage + offsetInBank;
+		RtlCopyBytes(lpDest, lpSrc, copyLen);
+		lpSrc += copyLen;
+		uLen -= copyLen;
+		ebx += copyLen >> SECTOR_LOG2;
 	}
 	/* Unmap */
 	ExtFileUnmap(pEramExt);
