@@ -137,7 +137,6 @@ INT nDiskSizeUnit = 0;	/* 0=KB, 1=MB, 2=GB */
 /* string constants */
 CHAR szWinName[] = "ERAM for Windows NT/2000/XP";
 CHAR szRootDir[] = "RootDirEntries";
-CHAR szOption[] = "Option";
 CHAR szAllocUnit[] = "AllocUnit";
 CHAR szMediaId[] = "MediaId";
 CHAR szDefDrv[] = "DriveLetter";
@@ -251,46 +250,38 @@ BOOL WINAPI WmInitDialog(HWND hDlg, HWND hwndFocus, LPARAM lInitParam)
 VOID WINAPI GetRegOption(LPERAMREGOPT lpEramOpt)
 {
 	/* Local variable(s) */
-	DWORD dwNonPaged, dwExternal, dwSkipExtCheck, dwSwapable, dwSkipReport, dwMakeTemp;
+	DWORD dwNonPaged = 0, dwExternal = 0, dwSkipExtCheck = 0, dwSwapable = 0, dwSkipReport = 0, dwMakeTemp = 0;
 	LONG lRet;
 	ULONG uSize;
 	DWORD dwType;
 	/* Get the number of root directories */
 	ReadRegValues(hgKey, szRootDir, REG_DWORD, &(lpEramOpt->wRootDir), sizeof(lpEramOpt->wRootDir), 128);
-	/* Get the option(s): try individual keys first, fall back to combined Option */
+	/* Get the option(s) from individual registry keys */
+	lpEramOpt->uOption.dwOptflag = 0;
 	uSize = sizeof(dwNonPaged);
 	lRet = RegQueryValueEx(hgKey, szNonPaged, NULL, &dwType, (LPBYTE)(&dwNonPaged), &uSize);
 	if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
-	{
-		/* Individual option keys exist — read all of them */
-		lpEramOpt->uOption.dwOptflag = 0;
 		lpEramOpt->uOption.Bits.NonPaged = (dwNonPaged != 0) ? 1 : 0;
-		uSize = sizeof(dwExternal);
-		lRet = RegQueryValueEx(hgKey, szExternal, NULL, &dwType, (LPBYTE)(&dwExternal), &uSize);
-		if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
-			lpEramOpt->uOption.Bits.External = (dwExternal != 0) ? 1 : 0;
-		uSize = sizeof(dwSkipExtCheck);
-		lRet = RegQueryValueEx(hgKey, szSkipExternalCheck, NULL, &dwType, (LPBYTE)(&dwSkipExtCheck), &uSize);
-		if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
-			lpEramOpt->uOption.Bits.SkipExternalCheck = (dwSkipExtCheck != 0) ? 1 : 0;
-		uSize = sizeof(dwSwapable);
-		lRet = RegQueryValueEx(hgKey, szSwapable, NULL, &dwType, (LPBYTE)(&dwSwapable), &uSize);
-		if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
-			lpEramOpt->uOption.Bits.Swapable = (dwSwapable != 0) ? 1 : 0;
-		uSize = sizeof(dwSkipReport);
-		lRet = RegQueryValueEx(hgKey, szSkipReportUsage, NULL, &dwType, (LPBYTE)(&dwSkipReport), &uSize);
-		if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
-			lpEramOpt->uOption.Bits.SkipReportUsage = (dwSkipReport != 0) ? 1 : 0;
-		uSize = sizeof(dwMakeTemp);
-		lRet = RegQueryValueEx(hgKey, szMakeTempDir, NULL, &dwType, (LPBYTE)(&dwMakeTemp), &uSize);
-		if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
-			lpEramOpt->uOption.Bits.MakeTempDir = (dwMakeTemp != 0) ? 1 : 0;
-	}
-	else
-	{
-		/* Fall back to combined Option key */
-		ReadRegValues(hgKey, szOption, REG_DWORD, &(lpEramOpt->uOption.dwOptflag), sizeof(lpEramOpt->uOption.dwOptflag), 0);
-	}
+	uSize = sizeof(dwExternal);
+	lRet = RegQueryValueEx(hgKey, szExternal, NULL, &dwType, (LPBYTE)(&dwExternal), &uSize);
+	if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
+		lpEramOpt->uOption.Bits.External = (dwExternal != 0) ? 1 : 0;
+	uSize = sizeof(dwSkipExtCheck);
+	lRet = RegQueryValueEx(hgKey, szSkipExternalCheck, NULL, &dwType, (LPBYTE)(&dwSkipExtCheck), &uSize);
+	if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
+		lpEramOpt->uOption.Bits.SkipExternalCheck = (dwSkipExtCheck != 0) ? 1 : 0;
+	uSize = sizeof(dwSwapable);
+	lRet = RegQueryValueEx(hgKey, szSwapable, NULL, &dwType, (LPBYTE)(&dwSwapable), &uSize);
+	if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
+		lpEramOpt->uOption.Bits.Swapable = (dwSwapable != 0) ? 1 : 0;
+	uSize = sizeof(dwSkipReport);
+	lRet = RegQueryValueEx(hgKey, szSkipReportUsage, NULL, &dwType, (LPBYTE)(&dwSkipReport), &uSize);
+	if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
+		lpEramOpt->uOption.Bits.SkipReportUsage = (dwSkipReport != 0) ? 1 : 0;
+	uSize = sizeof(dwMakeTemp);
+	lRet = RegQueryValueEx(hgKey, szMakeTempDir, NULL, &dwType, (LPBYTE)(&dwMakeTemp), &uSize);
+	if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
+		lpEramOpt->uOption.Bits.MakeTempDir = (dwMakeTemp != 0) ? 1 : 0;
 	/* Get the allocation unit */
 	ReadRegValues(hgKey, szAllocUnit, REG_DWORD, &(lpEramOpt->byAllocUnit), sizeof(lpEramOpt->byAllocUnit), 1024 / SECTOR);
 	/* Get the media ID */
@@ -909,8 +900,8 @@ BOOL WINAPI SetRegOption(LPERAMREGOPT lpEramOpt)
 	dwVal = (DWORD)lpEramOpt->uOption.Bits.MakeTempDir;
 	if (RegSetValueEx(hgKey, szMakeTempDir, 0, REG_DWORD, (LPBYTE)(&dwVal), sizeof(dwVal)) != ERROR_SUCCESS)
 		return FALSE;
-	/* Delete the old combined Option key to complete the migration */
-	RegDeleteValue(hgKey, szOption);
+	/* Remove the legacy combined Option key if it still exists */
+	RegDeleteValue(hgKey, "Option");
 	/* Set the allocation unit */
 	dwVal = (DWORD)lpEramOpt->byAllocUnit;
 	if (RegSetValueEx(hgKey, szAllocUnit, 0, REG_DWORD, (LPBYTE)(&dwVal), sizeof(dwVal)) != ERROR_SUCCESS)
