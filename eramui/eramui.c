@@ -132,16 +132,22 @@ BOOL bReboot = FALSE;
 HKEY hgKey = NULL;
 BOOL bProp = FALSE;
 SETUPAPIENTRYS sSetupApi = { NULL, NULL, NULL, NULL, NULL, NULL };
+INT nDiskSizeUnit = 0;	/* 0=KB, 1=MB, 2=GB */
 
 /* string constants */
 CHAR szWinName[] = "ERAM for Windows NT/2000/XP";
 CHAR szRootDir[] = "RootDirEntries";
-CHAR szOption[] = "Option";
 CHAR szAllocUnit[] = "AllocUnit";
 CHAR szMediaId[] = "MediaId";
 CHAR szDefDrv[] = "DriveLetter";
 CHAR szPage[] = "Page";
 CHAR szExtStart[] = "ExtStart";
+CHAR szNonPaged[] = "NonPaged";
+CHAR szExternal[] = "External";
+CHAR szSkipExternalCheck[] = "SkipExternalCheck";
+CHAR szSwapable[] = "Swapable";
+CHAR szSkipReportUsage[] = "SkipReportUsage";
+CHAR szMakeTempDir[] = "MakeTempDir";
 
 /* prototypes */
 BOOL WINAPI StatusDlgProc(HWND, UINT, WPARAM, LPARAM);
@@ -243,10 +249,39 @@ BOOL WINAPI WmInitDialog(HWND hDlg, HWND hwndFocus, LPARAM lInitParam)
 
 VOID WINAPI GetRegOption(LPERAMREGOPT lpEramOpt)
 {
+	/* Local variable(s) */
+	DWORD dwNonPaged = 0, dwExternal = 0, dwSkipExtCheck = 0, dwSwapable = 0, dwSkipReport = 0, dwMakeTemp = 0;
+	LONG lRet;
+	ULONG uSize;
+	DWORD dwType;
 	/* Get the number of root directories */
 	ReadRegValues(hgKey, szRootDir, REG_DWORD, &(lpEramOpt->wRootDir), sizeof(lpEramOpt->wRootDir), 128);
-	/* Get the option(s) */
-	ReadRegValues(hgKey, szOption, REG_DWORD, &(lpEramOpt->uOption.dwOptflag), sizeof(lpEramOpt->uOption.dwOptflag), 0);
+	/* Get the option(s) from individual registry keys */
+	lpEramOpt->uOption.dwOptflag = 0;
+	uSize = sizeof(dwNonPaged);
+	lRet = RegQueryValueEx(hgKey, szNonPaged, NULL, &dwType, (LPBYTE)(&dwNonPaged), &uSize);
+	if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
+		lpEramOpt->uOption.Bits.NonPaged = (dwNonPaged != 0) ? 1 : 0;
+	uSize = sizeof(dwExternal);
+	lRet = RegQueryValueEx(hgKey, szExternal, NULL, &dwType, (LPBYTE)(&dwExternal), &uSize);
+	if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
+		lpEramOpt->uOption.Bits.External = (dwExternal != 0) ? 1 : 0;
+	uSize = sizeof(dwSkipExtCheck);
+	lRet = RegQueryValueEx(hgKey, szSkipExternalCheck, NULL, &dwType, (LPBYTE)(&dwSkipExtCheck), &uSize);
+	if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
+		lpEramOpt->uOption.Bits.SkipExternalCheck = (dwSkipExtCheck != 0) ? 1 : 0;
+	uSize = sizeof(dwSwapable);
+	lRet = RegQueryValueEx(hgKey, szSwapable, NULL, &dwType, (LPBYTE)(&dwSwapable), &uSize);
+	if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
+		lpEramOpt->uOption.Bits.Swapable = (dwSwapable != 0) ? 1 : 0;
+	uSize = sizeof(dwSkipReport);
+	lRet = RegQueryValueEx(hgKey, szSkipReportUsage, NULL, &dwType, (LPBYTE)(&dwSkipReport), &uSize);
+	if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
+		lpEramOpt->uOption.Bits.SkipReportUsage = (dwSkipReport != 0) ? 1 : 0;
+	uSize = sizeof(dwMakeTemp);
+	lRet = RegQueryValueEx(hgKey, szMakeTempDir, NULL, &dwType, (LPBYTE)(&dwMakeTemp), &uSize);
+	if ((lRet == ERROR_SUCCESS) && (dwType == REG_DWORD))
+		lpEramOpt->uOption.Bits.MakeTempDir = (dwMakeTemp != 0) ? 1 : 0;
 	/* Get the allocation unit */
 	ReadRegValues(hgKey, szAllocUnit, REG_DWORD, &(lpEramOpt->byAllocUnit), sizeof(lpEramOpt->byAllocUnit), 1024 / SECTOR);
 	/* Get the media ID */
@@ -425,7 +460,30 @@ VOID WINAPI SetPageOption(HWND hDlg, LPERAMREGOPT lpEramOpt)
 	}
 	ComboBox_SetCurSel(hCtl, nSelect);
 	/* Set the page number */
-	SetDlgItemInt(hDlg, IDC_EDIT_PAGE, (ULONG)(lpEramOpt->dwSizePage << 2), FALSE);
+	{
+		DWORD dwSizeKB = (ULONG)(lpEramOpt->dwSizePage) * 4;	/* pages to KB */
+		if ((dwSizeKB >= (1024UL * 1024UL)) && ((dwSizeKB % (1024UL * 1024UL)) == 0))
+		{
+			/* Display in GB */
+			nDiskSizeUnit = 2;
+			Button_SetCheck(GetDlgItem(hDlg, IDC_RADIO_GB), 1);
+			SetDlgItemInt(hDlg, IDC_EDIT_PAGE, dwSizeKB / (1024UL * 1024UL), FALSE);
+		}
+		else if ((dwSizeKB >= 1024UL) && ((dwSizeKB % 1024UL) == 0))
+		{
+			/* Display in MB */
+			nDiskSizeUnit = 1;
+			Button_SetCheck(GetDlgItem(hDlg, IDC_RADIO_MB), 1);
+			SetDlgItemInt(hDlg, IDC_EDIT_PAGE, dwSizeKB / 1024UL, FALSE);
+		}
+		else
+		{
+			/* Display in KB */
+			nDiskSizeUnit = 0;
+			Button_SetCheck(GetDlgItem(hDlg, IDC_RADIO_KB), 1);
+			SetDlgItemInt(hDlg, IDC_EDIT_PAGE, dwSizeKB, FALSE);
+		}
+	}
 	Edit_LimitText(GetDlgItem(hDlg, IDC_EDIT_PAGE), 10);		/* up to ~9.5TB in KB */
 	/* Set the starting positioin of external memory */
 	hCtl = GetDlgItem(hDlg, IDC_EDIT_EXTSTART_MB);
@@ -497,6 +555,42 @@ VOID WINAPI WmCommand(HWND hDlg, INT wId, HWND hWndCtl, UINT wNotifyCode)
 	case IDC_CHECK_MAKE_TEMP:
 		if (wNotifyCode == BN_CLICKED)
 		{
+			bUpdate = TRUE;
+		}
+		break;
+	case IDC_RADIO_KB:
+	case IDC_RADIO_MB:
+	case IDC_RADIO_GB:
+		if (wNotifyCode == BN_CLICKED)
+		{
+			/* Convert the displayed value from the previous unit to the new unit */
+			INT nNewUnit;
+			if (wId == IDC_RADIO_GB)
+				nNewUnit = 2;
+			else if (wId == IDC_RADIO_MB)
+				nNewUnit = 1;
+			else
+				nNewUnit = 0;
+			if (nNewUnit != nDiskSizeUnit)
+			{
+				DWORD dwDisplayed = GetDlgItemInt(hDlg, IDC_EDIT_PAGE, NULL, FALSE);
+				DWORD dwSizeKB;
+				/* Convert displayed value to KB first */
+				if (nDiskSizeUnit == 2)
+					dwSizeKB = dwDisplayed * 1024UL * 1024UL;
+				else if (nDiskSizeUnit == 1)
+					dwSizeKB = dwDisplayed * 1024UL;
+				else
+					dwSizeKB = dwDisplayed;
+				/* Convert from KB to new unit */
+				if (nNewUnit == 2)
+					SetDlgItemInt(hDlg, IDC_EDIT_PAGE, dwSizeKB / (1024UL * 1024UL), FALSE);
+				else if (nNewUnit == 1)
+					SetDlgItemInt(hDlg, IDC_EDIT_PAGE, dwSizeKB / 1024UL, FALSE);
+				else
+					SetDlgItemInt(hDlg, IDC_EDIT_PAGE, dwSizeKB, FALSE);
+				nDiskSizeUnit = nNewUnit;
+			}
 			bUpdate = TRUE;
 		}
 		break;
@@ -717,8 +811,18 @@ BOOL WINAPI GetPageOption(HWND hDlg, LPERAMREGOPT lpEramOpt)
 			}
 		}
 	}
-	/* Get the page number */
-	lpEramOpt->dwSizePage = (GetDlgItemInt(hDlg, IDC_EDIT_PAGE, NULL, FALSE) + 3) >> 2;
+	/* Get the page number — convert from current display unit to 4KB pages */
+	{
+		ULONGLONG ullDisplayed = (ULONGLONG)GetDlgItemInt(hDlg, IDC_EDIT_PAGE, NULL, FALSE);
+		ULONGLONG ullSizeKB;
+		if (Button_GetCheck(GetDlgItem(hDlg, IDC_RADIO_GB)) != 0)
+			ullSizeKB = ullDisplayed * 1024ULL * 1024ULL;
+		else if (Button_GetCheck(GetDlgItem(hDlg, IDC_RADIO_MB)) != 0)
+			ullSizeKB = ullDisplayed * 1024ULL;
+		else
+			ullSizeKB = ullDisplayed;
+		lpEramOpt->dwSizePage = (DWORD)((ullSizeKB + 3) >> 2);
+	}
 	if (lpEramOpt->uOption.Bits.EnableFat32 == 0)		/* Prohibit FAT32 */
 	{
 		ulPageT = ((ULONGLONG)DISKMAXCLUSTER_16 * SECTOR * lpEramOpt->byAllocUnit) / PAGE_SIZE_4K;
@@ -729,10 +833,17 @@ BOOL WINAPI GetPageOption(HWND hDlg, LPERAMREGOPT lpEramOpt)
 	}
 	if ((ULONGLONG)(lpEramOpt->dwSizePage) > ulPageT)		/* exceed allocation unit restriction */
 	{
+		DWORD dwLimitKB = (DWORD)ulPageT << 2;
 		lpEramOpt->dwSizePage = (DWORD)ulPageT;
-		wsprintf(szMsg, GetResStr((WORD)((lpEramOpt->byAllocUnit == MAXALLOCUNIT) ? IDS_WARN_LIMIT_SIZE : IDS_WARN_LIMIT_SIZE_THIS_UNIT), szText, sizeof(szText)), ((DWORD)ulPageT << 2));
+		wsprintf(szMsg, GetResStr((WORD)((lpEramOpt->byAllocUnit == MAXALLOCUNIT) ? IDS_WARN_LIMIT_SIZE : IDS_WARN_LIMIT_SIZE_THIS_UNIT), szText, sizeof(szText)), dwLimitKB);
 		MessageBox(hDlg, szMsg, szWinName, MB_OK | MB_ICONEXCLAMATION | MB_SETFOREGROUND);
-		SetDlgItemInt(hDlg, IDC_EDIT_PAGE, ((DWORD)ulPageT << 2), FALSE);
+		/* Reset edit box in current unit */
+		if (Button_GetCheck(GetDlgItem(hDlg, IDC_RADIO_GB)) != 0)
+			SetDlgItemInt(hDlg, IDC_EDIT_PAGE, dwLimitKB / (1024UL * 1024UL), FALSE);
+		else if (Button_GetCheck(GetDlgItem(hDlg, IDC_RADIO_MB)) != 0)
+			SetDlgItemInt(hDlg, IDC_EDIT_PAGE, dwLimitKB / 1024UL, FALSE);
+		else
+			SetDlgItemInt(hDlg, IDC_EDIT_PAGE, dwLimitKB, FALSE);
 		return FALSE;
 	}
 	/* Test the entry number of root directories */
@@ -770,12 +881,27 @@ BOOL WINAPI SetRegOption(LPERAMREGOPT lpEramOpt)
 	{
 		return FALSE;
 	}
-	/* Set the option(s) */
-	dwVal = (DWORD)lpEramOpt->uOption.dwOptflag;
-	if (RegSetValueEx(hgKey, szOption, 0, REG_DWORD, (LPBYTE)(&dwVal), sizeof(dwVal)) != ERROR_SUCCESS)
-	{
+	/* Set individual option keys (replacing the combined Option key) */
+	dwVal = (DWORD)lpEramOpt->uOption.Bits.NonPaged;
+	if (RegSetValueEx(hgKey, szNonPaged, 0, REG_DWORD, (LPBYTE)(&dwVal), sizeof(dwVal)) != ERROR_SUCCESS)
 		return FALSE;
-	}
+	dwVal = (DWORD)lpEramOpt->uOption.Bits.External;
+	if (RegSetValueEx(hgKey, szExternal, 0, REG_DWORD, (LPBYTE)(&dwVal), sizeof(dwVal)) != ERROR_SUCCESS)
+		return FALSE;
+	dwVal = (DWORD)lpEramOpt->uOption.Bits.SkipExternalCheck;
+	if (RegSetValueEx(hgKey, szSkipExternalCheck, 0, REG_DWORD, (LPBYTE)(&dwVal), sizeof(dwVal)) != ERROR_SUCCESS)
+		return FALSE;
+	dwVal = (DWORD)lpEramOpt->uOption.Bits.Swapable;
+	if (RegSetValueEx(hgKey, szSwapable, 0, REG_DWORD, (LPBYTE)(&dwVal), sizeof(dwVal)) != ERROR_SUCCESS)
+		return FALSE;
+	dwVal = (DWORD)lpEramOpt->uOption.Bits.SkipReportUsage;
+	if (RegSetValueEx(hgKey, szSkipReportUsage, 0, REG_DWORD, (LPBYTE)(&dwVal), sizeof(dwVal)) != ERROR_SUCCESS)
+		return FALSE;
+	dwVal = (DWORD)lpEramOpt->uOption.Bits.MakeTempDir;
+	if (RegSetValueEx(hgKey, szMakeTempDir, 0, REG_DWORD, (LPBYTE)(&dwVal), sizeof(dwVal)) != ERROR_SUCCESS)
+		return FALSE;
+	/* Remove the legacy combined Option key if it still exists */
+	RegDeleteValue(hgKey, "Option");
 	/* Set the allocation unit */
 	dwVal = (DWORD)lpEramOpt->byAllocUnit;
 	if (RegSetValueEx(hgKey, szAllocUnit, 0, REG_DWORD, (LPBYTE)(&dwVal), sizeof(dwVal)) != ERROR_SUCCESS)
