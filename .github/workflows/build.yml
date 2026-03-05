@@ -21,6 +21,25 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Install Windows Driver Kit (WDK)
+        shell: powershell
+        run: |
+          # Download and install WDK 10.0.26100 (Windows 11, version 24H2)
+          # to match the Windows SDK version on the runner (windows-2025 / 10.0.26100)
+          $wdkUrl = "https://go.microsoft.com/fwlink/?linkid=2249371"
+          $installerPath = "$env:TEMP\wdksetup.exe"
+          Write-Host "Downloading WDK installer from $wdkUrl ..."
+          Invoke-WebRequest -Uri $wdkUrl -OutFile $installerPath -UseBasicParsing
+          Write-Host "Installing WDK (quiet, no restart)..."
+          $proc = Start-Process -FilePath $installerPath `
+            -ArgumentList "/quiet /norestart" `
+            -Wait -PassThru
+          Write-Host "WDK installer exit code: $($proc.ExitCode)"
+          if ($proc.ExitCode -ne 0) {
+            throw "WDK installation failed with exit code $($proc.ExitCode)"
+          }
+          Write-Host "WDK installed successfully."
+
       - name: Build x86
         run: msbuild eram.sln /p:Configuration=Release /p:Platform=x86 /m /t:Build /v:minimal
 
