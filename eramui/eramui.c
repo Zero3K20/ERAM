@@ -426,7 +426,7 @@ VOID WINAPI SetPageOption(HWND hDlg, LPERAMREGOPT lpEramOpt)
 	ComboBox_SetCurSel(hCtl, nSelect);
 	/* Set the page number */
 	SetDlgItemInt(hDlg, IDC_EDIT_PAGE, (ULONG)(lpEramOpt->dwSizePage << 2), FALSE);
-	Edit_LimitText(GetDlgItem(hDlg, IDC_EDIT_PAGE), 7);		/* 1024MB=1048576KB */
+	Edit_LimitText(GetDlgItem(hDlg, IDC_EDIT_PAGE), 10);		/* up to ~9.5TB in KB */
 	/* Set the starting positioin of external memory */
 	hCtl = GetDlgItem(hDlg, IDC_EDIT_EXTSTART_MB);
 	SetDlgItemInt(hDlg, IDC_EDIT_EXTSTART_MB, (ULONG)(lpEramOpt->dwExtStart / 0x100000), FALSE);
