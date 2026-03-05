@@ -21,6 +21,52 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Install Windows Driver Kit (WDK)
+        shell: powershell
+        run: |
+          # Download and install WDK 10.0.26100 (Windows 11, version 24H2)
+          # to match the Windows SDK version on the runner (windows-2025 / 10.0.26100)
+          $wdkUrl = "https://go.microsoft.com/fwlink/?linkid=2249371"
+          $installerPath = "$env:TEMP\wdksetup.exe"
+          Write-Host "Downloading WDK installer from $wdkUrl ..."
+          Invoke-WebRequest -Uri $wdkUrl -OutFile $installerPath -UseBasicParsing
+          Write-Host "Installing WDK (quiet, no restart)..."
+          $proc = Start-Process -FilePath $installerPath `
+            -ArgumentList "/quiet /norestart" `
+            -Wait -PassThru
+          Write-Host "WDK installer exit code: $($proc.ExitCode)"
+          if ($proc.ExitCode -ne 0) {
+            throw "WDK installation failed with exit code $($proc.ExitCode)"
+          }
+          Write-Host "WDK installed successfully."
+
+          # Set DDK_INC_PATH and DDK_LIB_PATH so the vcxproj IncludePath/LibraryPath
+          # properties resolve correctly. The WindowsKernelModeDriver10.0 toolset's
+          # VS extension does not reliably set these legacy variables in CI.
+          $wdkRoot    = "C:\Program Files (x86)\Windows Kits\10"
+          $incBase    = "$wdkRoot\Include"
+          # Filter to version-number directories only (e.g. 10.0.26100.0) to avoid
+          # non-version subdirs like 'wdf' being picked up by a descending sort.
+          $verDirs = Get-ChildItem $incBase -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d+\.' } |
+            Sort-Object Name -Descending
+          if (-not $verDirs) {
+            throw "No WDK version directories found under $incBase. WDK may not have installed correctly."
+          }
+          $ver = $verDirs[0].Name
+          Write-Host "Detected WDK include version: $ver"
+
+          $kmInc     = "$incBase\$ver\km"
+          $sharedInc = "$incBase\$ver\shared"
+          if (-not (Test-Path $kmInc))     { throw "WDK km include directory not found: $kmInc" }
+          if (-not (Test-Path $sharedInc)) { throw "WDK shared include directory not found: $sharedInc" }
+          "DDK_INC_PATH=$kmInc;$sharedInc" | Add-Content $env:GITHUB_ENV
+          Write-Host "Set DDK_INC_PATH=$kmInc;$sharedInc"
+
+          $libBase = "$wdkRoot\Lib\$ver\km"
+          "DDK_LIB_PATH=$libBase\x86;$libBase\x64" | Add-Content $env:GITHUB_ENV
+          Write-Host "Set DDK_LIB_PATH=$libBase\x86;$libBase\x64"
+
       - name: Build x86
         run: msbuild eram.sln /p:Configuration=Release /p:Platform=x86 /m /t:Build /v:minimal
 
