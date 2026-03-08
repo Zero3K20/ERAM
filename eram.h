@@ -276,17 +276,7 @@ extern __declspec(dllimport) ULONG NtBuildNumber;
 #define	BUILD_NUMBER_NT50	(2195)
 #define	BUILD_NUMBER_NT51	(2600)
 
-NTSTATUS
-NTAPI
-ZwCreateSection(
-	OUT PHANDLE				SectionHandle,
-	IN ACCESS_MASK			DesiredAccess,
-	IN POBJECT_ATTRIBUTES	ObjectAttributes OPTIONAL,
-	IN PLARGE_INTEGER		MaximumSize OPTIONAL,
-	IN ULONG				SectionPageProtection,
-	IN ULONG				AllocationAttributes,
-	IN HANDLE				FileHandle OPTIONAL
- );
+/* ZwCreateSection is declared in wdm.h (included via ntddk.h) */
 #ifndef	SEC_COMMIT
 #define	SEC_COMMIT	(0x8000000)
 #endif
