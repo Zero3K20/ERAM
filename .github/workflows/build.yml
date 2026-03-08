@@ -3,6 +3,7 @@ name: Build ERAM Driver
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
@@ -12,7 +13,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -192,6 +193,9 @@ jobs:
             Copy-Item "Release\$arch\eram.sys" $pkg
             Copy-Item install.bat  $pkg
             Copy-Item uninstall.bat $pkg
+            Copy-Item LICENSE $pkg
+            Copy-Item readme.md $pkg
+            Copy-Item eram.cpl $pkg
             Compress-Archive -Path "$pkg\*" -DestinationPath "dist\eram-$arch.zip" -Force
             Write-Host "Created: dist\eram-$arch.zip"
           }
@@ -207,3 +211,11 @@ jobs:
         with:
           name: eram-x64
           path: dist/eram-x64.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/eram-x86.zip
+            dist/eram-x64.zip
