@@ -123,15 +123,20 @@ jobs:
           }
           Write-Host "Using x86 lib dir: $x86LibDir"
 
-          $ddk_lib = "$x86LibDir;$x64LibDir"
-          "DDK_LIB_PATH=$ddk_lib" | Add-Content $env:GITHUB_ENV
-          Write-Host "Set DDK_LIB_PATH=$ddk_lib"
+          # Export architecture-specific lib paths so each build step links against
+          # only the matching architecture's ntoskrnl.lib.  Mixing x86 and x64 dirs
+          # in a single DDK_LIB_PATH causes LNK4272 "machine type conflicts" when the
+          # wrong-arch lib is found first, breaking symbol resolution.
+          "DDK_LIB_PATH_X86=$x86LibDir" | Add-Content $env:GITHUB_ENV
+          "DDK_LIB_PATH_X64=$x64LibDir" | Add-Content $env:GITHUB_ENV
+          Write-Host "Set DDK_LIB_PATH_X86=$x86LibDir"
+          Write-Host "Set DDK_LIB_PATH_X64=$x64LibDir"
 
       - name: Build x86
-        run: msbuild eram.sln /p:Configuration=Release /p:Platform=x86 /m /t:Build /v:minimal
+        run: msbuild eram.sln /p:Configuration=Release /p:Platform=x86 /m /t:Build /v:minimal /p:DDK_LIB_PATH="$env:DDK_LIB_PATH_X86"
 
       - name: Build x64
-        run: msbuild eram.sln /p:Configuration=Release /p:Platform=x64 /m /t:Build /v:minimal
+        run: msbuild eram.sln /p:Configuration=Release /p:Platform=x64 /m /t:Build /v:minimal /p:DDK_LIB_PATH="$env:DDK_LIB_PATH_X64"
 
       - name: Create test signing certificate
         shell: powershell
