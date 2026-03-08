@@ -65,23 +65,55 @@ jobs:
           "DDK_INC_PATH=$ddk_inc" | Add-Content $env:GITHUB_ENV
           Write-Host "Set DDK_INC_PATH=$ddk_inc"
 
-          # Derive the km lib base from the km include path:
-          # e.g. ...\c\Include\10.0.26100.0\km -> ...\c\Lib\10.0.26100.0\km
+          # Locate km lib directories for x64 and x86.
+          # Search order: (1) x64 NuGet pkg derived path, (2) recursive NuGet search,
+          # (3) Windows Kits tree written by wdksetup.exe.
+          $wkLibRoot = "C:\Program Files (x86)\Windows Kits\10\Lib"
           $kmLibBase = $kmInc.Replace('\Include\', '\Lib\')
+
+          # --- x64 lib dir ---
           $x64LibDir = "$kmLibBase\x64"
-          $x86LibDir = "$kmLibBase\x86"
           if (-not (Test-Path $x64LibDir)) {
-            throw "WDK x64 km lib directory not found: $x64LibDir"
+            $hit = Get-ChildItem $nugetDir -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue |
+                     Where-Object { $_.DirectoryName -match '\\x64$' } | Select-Object -First 1
+            if (-not $hit) {
+              $hit = Get-ChildItem $wkLibRoot -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue |
+                       Where-Object { $_.DirectoryName -match '\\km\\x64$' } | Select-Object -First 1
+            }
+            if ($hit) { $x64LibDir = $hit.DirectoryName }
+            else { throw "ntoskrnl.lib for x64 not found under $nugetDir or $wkLibRoot" }
           }
-          # The x64 NuGet package typically ships both x64 and x86 km libs.
-          # If not present, fall back to the x86 NuGet package (same structure).
-          if (-not (Test-Path $x86LibDir)) {
-            $x86LibDirAlt = "$nugetDir\$wdkX86PkgName" + $kmLibBase.Substring(("$nugetDir\$wdkX64PkgName").Length)
-            $x86LibDir = "$x86LibDirAlt\x86"
-            if (-not (Test-Path $x86LibDir)) {
-              throw "WDK x86 km lib directory not found in either x64 or x86 NuGet package (tried: $kmLibBase\x86 and $x86LibDir)"
+          Write-Host "Using x64 lib dir: $x64LibDir"
+
+          # --- x86 lib dir ---
+          # Try: x64 pkg's x86 subdir, then x86 NuGet pkg (recursive), then Windows Kits.
+          $x86LibDir = $null
+          $x86InX64 = "$kmLibBase\x86"
+          if (Test-Path $x86InX64) {
+            $x86LibDir = $x86InX64
+          } else {
+            $hit = Get-ChildItem "$nugetDir\$wdkX86PkgName" -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue |
+                     Where-Object { $_.DirectoryName -match '\\(x86|i386)$' } | Select-Object -First 1
+            if ($hit) {
+              $x86LibDir = $hit.DirectoryName
+            } else {
+              $hit = Get-ChildItem $wkLibRoot -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue |
+                       Where-Object { $_.DirectoryName -match '\\km\\(x86|i386)$' } | Select-Object -First 1
+              if ($hit) { $x86LibDir = $hit.DirectoryName }
             }
           }
+          if (-not $x86LibDir) {
+            Write-Host "ntoskrnl.lib for x86 not found. Diagnostics:"
+            Write-Host "  x86 NuGet package lib files:"
+            Get-ChildItem "$nugetDir\$wdkX86PkgName" -Recurse -Include "*.lib" -ErrorAction SilentlyContinue |
+              Select-Object -First 30 | ForEach-Object { Write-Host "    $($_.FullName)" }
+            Write-Host "  Windows Kits ntoskrnl.lib files:"
+            Get-ChildItem $wkLibRoot -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host "    $($_.FullName)" }
+            throw "ntoskrnl.lib for x86 not found in NuGet packages or Windows Kits ($wkLibRoot)"
+          }
+          Write-Host "Using x86 lib dir: $x86LibDir"
+
           $ddk_lib = "$x86LibDir;$x64LibDir"
           "DDK_LIB_PATH=$ddk_lib" | Add-Content $env:GITHUB_ENV
           Write-Host "Set DDK_LIB_PATH=$ddk_lib"
