@@ -21,11 +21,122 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Install Windows Driver Kit (WDK)
+        shell: powershell
+        run: |
+          # Install the WDK Visual Studio extension, which provides the
+          # WindowsKernelModeDriver10.0 platform toolset used by eram.vcxproj.
+          $wdkUrl = "https://go.microsoft.com/fwlink/?linkid=2249371"
+          $installerPath = "$env:TEMP\wdksetup.exe"
+          Write-Host "Downloading WDK installer..."
+          Invoke-WebRequest -Uri $wdkUrl -OutFile $installerPath -UseBasicParsing
+          Write-Host "Installing WDK VS extension (quiet, no restart)..."
+          $proc = Start-Process -FilePath $installerPath `
+            -ArgumentList "/quiet /norestart" `
+            -Wait -PassThru
+          Write-Host "WDK installer exit code: $($proc.ExitCode)"
+          if ($proc.ExitCode -ne 0) {
+            throw "WDK installation failed with exit code $($proc.ExitCode)"
+          }
+          Write-Host "WDK VS extension installed."
+
+          # The wdksetup.exe online installer only installs the VS toolset extension;
+          # it does not write standalone km\ headers to the Windows Kits directory.
+          # Install the kernel-mode headers and libs via the official WDK NuGet packages.
+          $nugetDir = "C:\WDK_NuGet"
+          $wdkX64PkgName = "Microsoft.Windows.WDK.x64"
+          $wdkX86PkgName = "Microsoft.Windows.WDK.x86"
+          New-Item -ItemType Directory -Force -Path $nugetDir | Out-Null
+          Write-Host "Installing $wdkX64PkgName NuGet package..."
+          nuget install $wdkX64PkgName -OutputDirectory $nugetDir -ExcludeVersion -NonInteractive
+          Write-Host "Installing $wdkX86PkgName NuGet package..."
+          nuget install $wdkX86PkgName -OutputDirectory $nugetDir -ExcludeVersion -NonInteractive
+
+          # Locate ntddk.h inside the x64 package (km headers are arch-independent)
+          $ntddkFile = Get-ChildItem "$nugetDir\$wdkX64PkgName" -Recurse -Filter "ntddk.h" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $ntddkFile) {
+            throw "ntddk.h not found in $wdkX64PkgName NuGet package"
+          }
+          $kmInc = $ntddkFile.DirectoryName
+          Write-Host "Found km headers at: $kmInc"
+          $sharedInc = Join-Path (Split-Path $kmInc -Parent) "shared"
+          if (-not (Test-Path $sharedInc)) { throw "WDK shared include directory not found: $sharedInc" }
+          $ddk_inc = "$kmInc;$sharedInc"
+          "DDK_INC_PATH=$ddk_inc" | Add-Content $env:GITHUB_ENV
+          Write-Host "Set DDK_INC_PATH=$ddk_inc"
+
+          # Locate km lib directories for x64 and x86.
+          # Always prefer the Windows Kits tree (installed by the pre-installed SDK and
+          # wdksetup.exe) over the NuGet packages: the WDK NuGet 10.0.26100 ntoskrnl.lib
+          # may omit import stubs for RTL functions that were inlined in newer toolchains,
+          # causing LNK2019 errors when linking drivers built for an older WDK API surface.
+          # Search order: (1) Windows Kits tree, (2) NuGet derived path, (3) NuGet recursive.
+          $wkLibRoot = "C:\Program Files (x86)\Windows Kits\10\Lib"
+          $kmLibBase = $kmInc.Replace('\Include\', '\Lib\')
+
+          # --- x64 lib dir ---
+          $x64LibDir = $null
+          $hit = Get-ChildItem $wkLibRoot -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue |
+                   Where-Object { $_.DirectoryName -match '\\km\\x64$' } |
+                   Sort-Object FullName -Descending | Select-Object -First 1
+          if ($hit) {
+            $x64LibDir = $hit.DirectoryName
+          } else {
+            $nugetX64Dir = "$kmLibBase\x64"
+            if (Test-Path $nugetX64Dir) {
+              $x64LibDir = $nugetX64Dir
+            } else {
+              $hit = Get-ChildItem $nugetDir -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue |
+                       Where-Object { $_.DirectoryName -match '\\x64$' } | Select-Object -First 1
+              if ($hit) { $x64LibDir = $hit.DirectoryName }
+            }
+          }
+          if (-not $x64LibDir) { throw "ntoskrnl.lib for x64 not found under $wkLibRoot or $nugetDir" }
+          Write-Host "Using x64 lib dir: $x64LibDir"
+
+          # --- x86 lib dir ---
+          $x86LibDir = $null
+          $hit = Get-ChildItem $wkLibRoot -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue |
+                   Where-Object { $_.DirectoryName -match '\\km\\(x86|i386)$' } |
+                   Sort-Object FullName -Descending | Select-Object -First 1
+          if ($hit) {
+            $x86LibDir = $hit.DirectoryName
+          } else {
+            $nugetX86InX64 = "$kmLibBase\x86"
+            if (Test-Path $nugetX86InX64) {
+              $x86LibDir = $nugetX86InX64
+            } else {
+              $hit = Get-ChildItem $nugetDir -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue |
+                       Where-Object { $_.DirectoryName -match '\\(x86|i386)$' } | Select-Object -First 1
+              if ($hit) { $x86LibDir = $hit.DirectoryName }
+            }
+          }
+          if (-not $x86LibDir) {
+            Write-Host "ntoskrnl.lib for x86 not found. Diagnostics:"
+            Write-Host "  Windows Kits ntoskrnl.lib files:"
+            Get-ChildItem $wkLibRoot -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host "    $($_.FullName)" }
+            Write-Host "  NuGet ntoskrnl.lib files:"
+            Get-ChildItem $nugetDir -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host "    $($_.FullName)" }
+            throw "ntoskrnl.lib for x86 not found in Windows Kits ($wkLibRoot) or NuGet ($nugetDir)"
+          }
+          Write-Host "Using x86 lib dir: $x86LibDir"
+
+          # Export architecture-specific lib paths so each build step links against
+          # only the matching architecture's ntoskrnl.lib.  Mixing x86 and x64 dirs
+          # in a single DDK_LIB_PATH causes LNK4272 "machine type conflicts" when the
+          # wrong-arch lib is found first, breaking symbol resolution.
+          "DDK_LIB_PATH_X86=$x86LibDir" | Add-Content $env:GITHUB_ENV
+          "DDK_LIB_PATH_X64=$x64LibDir" | Add-Content $env:GITHUB_ENV
+          Write-Host "Set DDK_LIB_PATH_X86=$x86LibDir"
+          Write-Host "Set DDK_LIB_PATH_X64=$x64LibDir"
+
       - name: Build x86
-        run: msbuild eram.sln /p:Configuration=Release /p:Platform=x86 /m /t:Build /v:minimal
+        run: msbuild eram.sln /p:Configuration=Release /p:Platform=x86 /m /t:Build /v:minimal /p:DDK_LIB_PATH="$env:DDK_LIB_PATH_X86"
 
       - name: Build x64
-        run: msbuild eram.sln /p:Configuration=Release /p:Platform=x64 /m /t:Build /v:minimal
+        run: msbuild eram.sln /p:Configuration=Release /p:Platform=x64 /m /t:Build /v:minimal /p:DDK_LIB_PATH="$env:DDK_LIB_PATH_X64"
 
       - name: Create test signing certificate
         shell: powershell
