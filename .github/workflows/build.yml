@@ -193,6 +193,9 @@ jobs:
             Copy-Item "Release\$arch\eram.sys" $pkg
             Copy-Item install.bat  $pkg
             Copy-Item uninstall.bat $pkg
+            Copy-Item LICENSE $pkg
+            Copy-Item readme.md $pkg
+            Copy-Item eram.cpl $pkg
             Compress-Archive -Path "$pkg\*" -DestinationPath "dist\eram-$arch.zip" -Force
             Write-Host "Created: dist\eram-$arch.zip"
           }
