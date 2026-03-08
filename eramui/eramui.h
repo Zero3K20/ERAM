@@ -59,6 +59,11 @@
 #define IDC_RADIO_KB                    1012
 #define IDC_RADIO_MB                    1013
 #define IDC_RADIO_GB                    1014
+#define IDC_EDIT_BACKUPFILE             1015
+#define IDC_EDIT_BACKUP_INTERVAL        1016
+#define IDC_STATIC_BACKUP_FILE          1017
+#define IDC_STATIC_BACKUP_INTERVAL      1018
+#define IDC_STATIC_BACKUP_MINUTES       1019
 #define IDC_STATIC                      -1
 
 // Next default values for new objects

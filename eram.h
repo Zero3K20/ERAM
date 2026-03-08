@@ -77,6 +77,7 @@ typedef VOID (*ERAM_UNMAP)(PVOID);
 #define	BIOS_ADDRESS_START	((DWORD)(0xe0000))	/* E0000..FFFFF */
 #define	BIOS_ADDRESS_END	((DWORD)(0xfffff))	/* E0000..FFFFF */
 #define	BIOS_SIZE			((DWORD)(BIOS_ADDRESS_END - BIOS_ADDRESS_START + 1))
+#define BACKUP_CHUNK_SIZE	((ULONG)0x20000000)	/* 512MB: max bytes per ZwReadFile/ZwWriteFile call */
 
 /* BPB array (FAT12,16) */
 typedef	struct {
@@ -162,6 +163,11 @@ typedef struct {
 	ERAM_OPTFLAG		uOptflag;		// Option
 	BYTE				FAT_size;		// PARTITION_... FAT_12,FAT_16,HUGE,FAT32
 	BYTE				bThreadStop;	// Thread Stop Request
+	WCHAR				wszBackupFile[4];		// Backup file path prefix (\\?\\)
+	WCHAR				wszBackupFileMain[260];	// Backup file path (user-specified)
+	ULONG				uBackupInterval;		// Backup interval in minutes (0=disabled)
+	PVOID				pBackupThreadObject;	// Periodic backup thread object
+	KEVENT				BackupEvent;			// Event to wake/stop backup thread
  } ERAM_EXTENSION, *PERAM_EXTENSION;
 
 /* MBR-inside partitoin table (PC/AT) */
@@ -459,6 +465,18 @@ NTSTATUS EramShutdown(
 	IN PIRP				pIrp
  );
 
+VOID EramBackupDisk(
+	IN PERAM_EXTENSION	pEramExt
+ );
+
+BOOLEAN EramRestoreDisk(
+	IN PERAM_EXTENSION	pEramExt
+ );
+
+VOID EramBackupThread(
+	IN PVOID			pContext
+ );
+
 /* Definitions for paging */
 #ifdef ALLOC_PRAGMA
 //------  Functions to be used at all times in normal use
@@ -494,6 +512,9 @@ NTSTATUS EramShutdown(
 #pragma	alloc_text(PAGE, ExtFileMap)
 #pragma	alloc_text(PAGE, ExtFileUnmap)
 #pragma	alloc_text(PAGE, EramShutdown)
+#pragma	alloc_text(PAGE, EramBackupDisk)
+#pragma	alloc_text(PAGE, EramRestoreDisk)
+#pragma	alloc_text(PAGE, EramBackupThread)
 #endif	// ALLOC_PRAGMA
 
 //------  Below are the functions used at initialization
@@ -568,6 +589,11 @@ BOOLEAN CheckVolumeLabel(
 VOID PrepareExtFileName(
 	IN PERAM_EXTENSION		pEramExt,
 	IN PFAT_ID				pFatId,
+	IN PUNICODE_STRING		pRegParam
+ );
+
+VOID PrepareBackupFileName(
+	IN PERAM_EXTENSION		pEramExt,
 	IN PUNICODE_STRING		pRegParam
  );
 
@@ -702,6 +728,7 @@ DWORD CheckRsdtElements(
 #pragma	alloc_text(INIT, PrepareVolumeLabel)
 #pragma	alloc_text(INIT, CheckVolumeLabel)
 #pragma	alloc_text(INIT, PrepareExtFileName)
+#pragma	alloc_text(INIT, PrepareBackupFileName)
 #pragma	alloc_text(INIT, EramFormatFat)
 #pragma	alloc_text(INIT, EramSetup)
 #pragma	alloc_text(INIT, EramLocate)
