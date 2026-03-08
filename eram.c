@@ -598,6 +598,17 @@ VOID EramUnloadDevice(
 		KdPrint(("Eram Device exist\n"));
 		/* Notify thread termination */
 		pEramExt->bThreadStop = TRUE;
+		/* Wake the periodic backup thread so it can exit */
+		KeSetEvent(&(pEramExt->BackupEvent), 0, FALSE);
+		/* Stop the periodic backup thread */
+		if (pEramExt->pBackupThreadObject != NULL)
+		{
+			/* Wait up to 10 seconds for backup thread to finish */
+			llTime.QuadPart = (LONGLONG)(-10 * 10000000);
+			KeWaitForSingleObject(pEramExt->pBackupThreadObject, Executive, KernelMode, FALSE, &llTime);
+			ObDereferenceObject(pEramExt->pBackupThreadObject);
+			pEramExt->pBackupThreadObject = NULL;
+		}
 		if (pEramExt->pThreadObject != NULL)		/* Thread exists */
 		{
 			/* Decrement semaphore */
@@ -1537,6 +1548,17 @@ NTSTATUS EramShutdown(
 	pEramExt = pDevObj->DeviceExtension;
 	/* Notify thread termination */
 	pEramExt->bThreadStop = TRUE;
+	/* Wake the periodic backup thread so it can exit */
+	KeSetEvent(&(pEramExt->BackupEvent), 0, FALSE);
+	/* Stop the periodic backup thread */
+	if (pEramExt->pBackupThreadObject != NULL)
+	{
+		/* Wait up to 10 seconds for backup thread to finish */
+		llTime.QuadPart = (LONGLONG)(-10 * 10000000);
+		KeWaitForSingleObject(pEramExt->pBackupThreadObject, Executive, KernelMode, FALSE, &llTime);
+		ObDereferenceObject(pEramExt->pBackupThreadObject);
+		pEramExt->pBackupThreadObject = NULL;
+	}
 	if (pEramExt->pThreadObject != NULL)		/* Thread exists */
 	{
 		/* Decrement semaphore */
@@ -1561,12 +1583,260 @@ NTSTATUS EramShutdown(
 		ZwClose(pEramExt->hFile);
 		pEramExt->hFile = NULL;
 	}
+	/* Backup disk to file on shutdown */
+	EramBackupDisk(pEramExt);
 	/* Set success */
 	pIrp->IoStatus.Status = STATUS_SUCCESS;
 	pIrp->IoStatus.Information = 0;
 	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
 	KdPrint(("EramShutdown end\n"));
 	return STATUS_SUCCESS;
+}
+
+
+/* EramBackupDisk
+		Write the RAM disk contents to the backup file.
+	Parameters
+		pEramExt	The pointer to an ERAM_EXTENTION structure.
+	Return Value
+		No return value.
+	Notes
+		Only backs up OS-managed memory (paged/non-paged pool).
+		External (OS-unmanaged) memory backup is not supported.
+*/
+
+VOID EramBackupDisk(
+	IN PERAM_EXTENSION	pEramExt
+ )
+{
+	/* local variables */
+	UNICODE_STRING		uniStr;
+	OBJECT_ATTRIBUTES	ObjAttr;
+	HANDLE				hFile;
+	IO_STATUS_BLOCK		IoStat;
+	NTSTATUS			ntStat;
+	LARGE_INTEGER		ByteOffset;
+	SIZE_T				uTotalSize;
+	SIZE_T				uRemain;
+	PBYTE				pBuf;
+	ULONG				uChunkSize;
+	WCHAR				wszFullPath[(sizeof(pEramExt->wszBackupFile) + sizeof(pEramExt->wszBackupFileMain)) / sizeof(WCHAR)];
+	KdPrint(("EramBackupDisk start\n"));
+	/* Skip if no backup file configured */
+	if (pEramExt->wszBackupFileMain[0] == UNICODE_NULL)
+	{
+		KdPrint(("EramBackupDisk: no backup file configured\n"));
+		return;
+	}
+	/* Only backup OS-managed (paged/non-paged pool) memory */
+	if (pEramExt->pPageBase == NULL)
+	{
+		KdPrint(("EramBackupDisk: not OS-managed memory, skipping\n"));
+		return;
+	}
+	/* Build full NT path: combine \\?\\ prefix with main path */
+	RtlCopyBytes(wszFullPath, pEramExt->wszBackupFile, sizeof(pEramExt->wszBackupFile));
+	RtlCopyBytes(
+		(PBYTE)wszFullPath + sizeof(pEramExt->wszBackupFile),
+		pEramExt->wszBackupFileMain,
+		sizeof(pEramExt->wszBackupFileMain)
+	);
+	RtlInitUnicodeString(&uniStr, wszFullPath);
+	InitializeObjectAttributes(&ObjAttr, &uniStr, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+	/* Create/overwrite the backup file */
+	ntStat = ZwCreateFile(
+		&hFile,
+		GENERIC_WRITE | SYNCHRONIZE,
+		&ObjAttr,
+		&IoStat,
+		NULL,
+		FILE_ATTRIBUTE_NORMAL,
+		0,
+		FILE_OVERWRITE_IF,
+		FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+		NULL,
+		0
+	);
+	if (ntStat != STATUS_SUCCESS)
+	{
+		KdPrint(("EramBackupDisk: ZwCreateFile failed 0x%x\n", ntStat));
+		EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "EramBackupDisk:ZwCreateFile");
+		return;
+	}
+	/* Write disk content in chunks */
+	uTotalSize = (SIZE_T)pEramExt->uSizeTotal << PAGE_SIZE_LOG2;
+	pBuf = pEramExt->pPageBase;
+	ByteOffset.QuadPart = 0;
+	uRemain = uTotalSize;
+	while (uRemain > 0)
+	{
+		/* Write at most 512MB per call */
+		uChunkSize = (uRemain > BACKUP_CHUNK_SIZE) ? BACKUP_CHUNK_SIZE : (ULONG)uRemain;
+		ntStat = ZwWriteFile(hFile, NULL, NULL, NULL, &IoStat, pBuf, uChunkSize, &ByteOffset, NULL);
+		if (ntStat != STATUS_SUCCESS)
+		{
+			KdPrint(("EramBackupDisk: ZwWriteFile failed 0x%x\n", ntStat));
+			EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "EramBackupDisk:ZwWriteFile");
+			break;
+		}
+		pBuf += uChunkSize;
+		ByteOffset.QuadPart += uChunkSize;
+		uRemain -= uChunkSize;
+	}
+	ZwClose(hFile);
+	KdPrint(("EramBackupDisk end\n"));
+}
+
+
+/* EramRestoreDisk
+		Read the backup file and restore the RAM disk contents.
+	Parameters
+		pEramExt	The pointer to an ERAM_EXTENTION structure.
+	Return Value
+		TRUE if restored successfully, FALSE otherwise (no file, size mismatch, I/O error).
+	Notes
+		Only restores to OS-managed memory (paged/non-paged pool).
+*/
+
+BOOLEAN EramRestoreDisk(
+	IN PERAM_EXTENSION	pEramExt
+ )
+{
+	/* local variables */
+	UNICODE_STRING					uniStr;
+	OBJECT_ATTRIBUTES				ObjAttr;
+	HANDLE							hFile;
+	IO_STATUS_BLOCK					IoStat;
+	NTSTATUS						ntStat;
+	LARGE_INTEGER					ByteOffset;
+	FILE_STANDARD_INFORMATION		FileInfo;
+	SIZE_T							uTotalSize;
+	SIZE_T							uRemain;
+	PBYTE							pBuf;
+	ULONG							uChunkSize;
+	WCHAR							wszFullPath[(sizeof(pEramExt->wszBackupFile) + sizeof(pEramExt->wszBackupFileMain)) / sizeof(WCHAR)];
+	KdPrint(("EramRestoreDisk start\n"));
+	/* Skip if no backup file configured */
+	if (pEramExt->wszBackupFileMain[0] == UNICODE_NULL)
+	{
+		KdPrint(("EramRestoreDisk: no backup file configured\n"));
+		return FALSE;
+	}
+	/* Only restore to OS-managed memory */
+	if (pEramExt->pPageBase == NULL)
+	{
+		KdPrint(("EramRestoreDisk: not OS-managed memory, skipping\n"));
+		return FALSE;
+	}
+	/* Build full NT path: combine \\?\\ prefix with main path */
+	RtlCopyBytes(wszFullPath, pEramExt->wszBackupFile, sizeof(pEramExt->wszBackupFile));
+	RtlCopyBytes(
+		(PBYTE)wszFullPath + sizeof(pEramExt->wszBackupFile),
+		pEramExt->wszBackupFileMain,
+		sizeof(pEramExt->wszBackupFileMain)
+	);
+	RtlInitUnicodeString(&uniStr, wszFullPath);
+	InitializeObjectAttributes(&ObjAttr, &uniStr, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+	/* Open the backup file (read-only) */
+	ntStat = ZwCreateFile(
+		&hFile,
+		GENERIC_READ | SYNCHRONIZE,
+		&ObjAttr,
+		&IoStat,
+		NULL,
+		FILE_ATTRIBUTE_NORMAL,
+		FILE_SHARE_READ,
+		FILE_OPEN,
+		FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+		NULL,
+		0
+	);
+	if (ntStat != STATUS_SUCCESS)
+	{
+		KdPrint(("EramRestoreDisk: ZwCreateFile failed 0x%x (no backup file?)\n", ntStat));
+		return FALSE;
+	}
+	/* Query file size */
+	ntStat = ZwQueryInformationFile(hFile, &IoStat, &FileInfo, sizeof(FileInfo), FileStandardInformation);
+	if (ntStat != STATUS_SUCCESS)
+	{
+		KdPrint(("EramRestoreDisk: ZwQueryInformationFile failed 0x%x\n", ntStat));
+		ZwClose(hFile);
+		return FALSE;
+	}
+	/* Verify backup file size matches current disk size */
+	uTotalSize = (SIZE_T)pEramExt->uSizeTotal << PAGE_SIZE_LOG2;
+	if ((SIZE_T)FileInfo.EndOfFile.QuadPart != uTotalSize)
+	{
+		KdPrint(("EramRestoreDisk: size mismatch backup=%I64u disk=%lu\n", FileInfo.EndOfFile.QuadPart, (ULONG)uTotalSize));
+		EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "EramRestoreDisk:size mismatch");
+		ZwClose(hFile);
+		return FALSE;
+	}
+	/* Read backup into RAM disk memory in chunks */
+	pBuf = pEramExt->pPageBase;
+	ByteOffset.QuadPart = 0;
+	uRemain = uTotalSize;
+	while (uRemain > 0)
+	{
+		/* Read at most 512MB per call */
+		uChunkSize = (uRemain > BACKUP_CHUNK_SIZE) ? BACKUP_CHUNK_SIZE : (ULONG)uRemain;
+		ntStat = ZwReadFile(hFile, NULL, NULL, NULL, &IoStat, pBuf, uChunkSize, &ByteOffset, NULL);
+		if (ntStat != STATUS_SUCCESS)
+		{
+			KdPrint(("EramRestoreDisk: ZwReadFile failed 0x%x\n", ntStat));
+			EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "EramRestoreDisk:ZwReadFile");
+			ZwClose(hFile);
+			return FALSE;
+		}
+		pBuf += uChunkSize;
+		ByteOffset.QuadPart += uChunkSize;
+		uRemain -= uChunkSize;
+	}
+	ZwClose(hFile);
+	KdPrint(("EramRestoreDisk end, disk restored from backup\n"));
+	return TRUE;
+}
+
+
+/* EramBackupThread
+		Periodic backup thread.  Wakes up at the configured interval and
+		saves the RAM disk to the backup file.
+	Parameters
+		pContext	The pointer to an ERAM_EXTENTION structure.
+	Return Value
+		No return value.
+*/
+
+VOID EramBackupThread(
+	IN PVOID	pContext
+ )
+{
+	/* local variables */
+	PERAM_EXTENSION		pEramExt;
+	LARGE_INTEGER		llInterval;
+	KdPrint(("EramBackupThread start\n"));
+	pEramExt = (PERAM_EXTENSION)pContext;
+	ASSERT(pEramExt != NULL);
+	KeSetPriorityThread(KeGetCurrentThread(), LOW_REALTIME_PRIORITY);
+	while (pEramExt->bThreadStop == 0)
+	{
+		/* Sleep for the backup interval (in minutes), or until woken */
+		llInterval.QuadPart = -(LONGLONG)pEramExt->uBackupInterval * 60 * 10000000;
+		KeWaitForSingleObject(&(pEramExt->BackupEvent), Executive, KernelMode, FALSE, &llInterval);
+		/* Clear event so we wait again next iteration */
+		KeClearEvent(&(pEramExt->BackupEvent));
+		if (pEramExt->bThreadStop != 0)		/* thread stop request */
+		{
+			KdPrint(("EramBackupThread: stop requested\n"));
+			break;
+		}
+		/* Perform the periodic backup */
+		KdPrint(("EramBackupThread: performing periodic backup\n"));
+		EramBackupDisk(pEramExt);
+	}
+	KdPrint(("EramBackupThread end\n"));
+	PsTerminateSystemThread(STATUS_SUCCESS);
 }
 
 
@@ -1725,6 +1995,8 @@ NTSTATUS EramInitDisk(
 	pEramExt = (PERAM_EXTENSION)(pDevObj->DeviceExtension);
 	/* ERAM info area initialization */
 	RtlZeroBytes(pEramExt, sizeof(*pEramExt));
+	/* Initialize backup event (used to wake/stop the backup thread) */
+	KeInitializeEvent(&(pEramExt->BackupEvent), NotificationEvent, FALSE);
 	/* Drive character buffer clear */
 	DrvBuf[0] = UNICODE_NULL;
 	RtlInitUnicodeString(&DrvStr, DrvBuf);
@@ -1768,12 +2040,30 @@ NTSTATUS EramInitDisk(
 		EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "MemSetup");
 		goto EramInitDiskExit;
 	}
-	/* FAT format */
-	if (EramFormatFat(pEramExt, pFatId) == FALSE)
+	/* Register for shutdown notification when backup is configured and OS-managed memory is used
+	   (file-backed mode registers it in MemSetup; external memory backup is not supported) */
+	if ((pEramExt->wszBackupFileMain[0] != UNICODE_NULL) &&
+		(pEramExt->uOptflag.Bits.UseExtFile == 0) &&
+		(pEramExt->uOptflag.Bits.External == 0))
 	{
-		EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "EramFormatFat");
-		ntStat = STATUS_INSUFFICIENT_RESOURCES;
-		goto EramInitDiskExit;
+		IoRegisterShutdownNotification(pEramExt->pDevObj);
+	}
+	/* Attempt to restore disk from backup file; format if no valid backup */
+	if (EramRestoreDisk(pEramExt) == TRUE)
+	{
+		/* Backup restored — set up geometry and function pointers without formatting */
+		EramSetup(pEramExt, pFatId);
+		EramLocate(pEramExt);
+	}
+	else
+	{
+		/* No backup (or size mismatch) — format with a fresh FAT */
+		if (EramFormatFat(pEramExt, pFatId) == FALSE)
+		{
+			EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "EramFormatFat");
+			ntStat = STATUS_INSUFFICIENT_RESOURCES;
+			goto EramInitDiskExit;
+		}
 	}
 	/* ERAM Info Settings */
 	pEramExt->bsHiddenSecs = pFatId->BPB_ext.bsHiddenSecs;
@@ -1807,6 +2097,30 @@ NTSTATUS EramInitDisk(
 		/* Win32 name area release */
 		ExFreePool(pEramExt->Win32Name.Buffer);
 		pEramExt->Win32Name.Buffer = NULL;
+	}
+	/* Start the periodic backup thread if interval and file are configured */
+	if ((ntStat == STATUS_SUCCESS) &&
+		(pEramExt->uBackupInterval > 0) &&
+		(pEramExt->wszBackupFileMain[0] != UNICODE_NULL))
+	{
+		HANDLE hBackupThread;
+		NTSTATUS ntBackupStat;
+		ntBackupStat = PsCreateSystemThread(&hBackupThread, THREAD_ALL_ACCESS, NULL, NULL, NULL, EramBackupThread, pEramExt);
+		if (ntBackupStat == STATUS_SUCCESS)
+		{
+			ntBackupStat = ObReferenceObjectByHandle(hBackupThread, THREAD_ALL_ACCESS, NULL, KernelMode, &(pEramExt->pBackupThreadObject), NULL);
+			ZwClose(hBackupThread);
+			if (ntBackupStat != STATUS_SUCCESS)
+			{
+				KdPrint(("Eram ObReferenceObjectByHandle(backup thread) failed\n"));
+				pEramExt->pBackupThreadObject = NULL;
+			}
+		}
+		else
+		{
+			KdPrint(("Eram PsCreateSystemThread(backup thread) failed\n"));
+		}
+		/* Failure to start the backup thread is non-fatal */
 	}
 EramInitDiskExit:	/* entry on error */
 	if (ntStat != STATUS_SUCCESS)	/* failed */
@@ -2169,6 +2483,7 @@ VOID CheckSwitch(
 	ULONG			OptSwapable,		defOptSwapable = 0;
 	ULONG			OptSkipReport,		defOptSkipReport = 0;
 	ULONG			OptMakeTemp,		defOptMakeTemp = 0;
+	ULONG			BackupInterval,		defBackupInterval = 0;
 	ERAM_OPTFLAG	uOptWork;
 	UINT			loopi;
 	ULONGLONG		ulPageT;
@@ -2176,7 +2491,11 @@ VOID CheckSwitch(
 	BOOLEAN			bDefault;
 	KdPrint(("Eram CheckSwitch start\n"));
 	bDefault = TRUE;
-	#define	REGOPTNUM	(13)
+	/* REGOPTNUM = number of registry parameters (entries 0..N-2) + 1 NULL terminator
+	   Entries: AllocUnit, DriveLetter, RootDirEntries, MediaId, Page, ExtStart,
+	            NonPaged, External, SkipExternalCheck, Swapable, SkipReportUsage,
+	            MakeTempDir, BackupInterval  (13 params + 1 NULL = 14) */
+	#define	REGOPTNUM	(14)
 	#define	REGOPTSIZE	(REGOPTNUM * sizeof(*pParamTable))
 	/* Allocate the memory for inquiry */
 	pParamTable = ExAllocatePoolWithTag(PagedPool, REGOPTSIZE, ERAM_POOL_TAG);
@@ -2229,6 +2548,9 @@ VOID CheckSwitch(
 		pParamTable[11].Name = (PWSTR)L"MakeTempDir";
 		pParamTable[11].EntryContext = &OptMakeTemp;
 		pParamTable[11].DefaultData = &defOptMakeTemp;
+		pParamTable[12].Name = (PWSTR)L"BackupInterval";
+		pParamTable[12].EntryContext = &BackupInterval;
+		pParamTable[12].DefaultData = &defBackupInterval;
 		bDefault = FALSE;
 		/* registry values collective inquiry */
 		ntStat = RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE | RTL_REGISTRY_OPTIONAL, pRegParam->Buffer, pParamTable, NULL, NULL);
@@ -2254,6 +2576,7 @@ VOID CheckSwitch(
 		OptSwapable = defOptSwapable;
 		OptSkipReport = defOptSkipReport;
 		OptMakeTemp = defOptMakeTemp;
+		BackupInterval = defBackupInterval;
 	}
 	/* Build option flags from individual registry keys */
 	uOptWork.dwOptflag = 0;
@@ -2335,6 +2658,9 @@ VOID CheckSwitch(
 	PrepareVolumeLabel(pEramExt, pFatId, pRegParam);
 	/* Prepare for external filename */
 	PrepareExtFileName(pEramExt, pFatId, pRegParam);
+	/* Prepare for backup filename and interval */
+	pEramExt->uBackupInterval = BackupInterval;
+	PrepareBackupFileName(pEramExt, pRegParam);
 	KdPrint(("Eram CheckSwitch end\n"));
 }
 
@@ -2560,6 +2886,57 @@ VOID PrepareExtFileName(
 		RtlCopyBytes(pFatId->wszExtFileMain, wszExtPath, sizeof(wszExtPath));
 	}
 	KdPrint(("Eram PrepareExtFileName end, External file \"%ls\"\n", pFatId->wszExtFile));
+}
+
+
+/* PrepareBackupFileName
+		Registry Reference (Backup Filename).
+	Parameters
+		pEramExt	The pointer to an ERAM_EXTENTION structure.
+		pRegParam	The pointer to the registry path string.
+	Return Value
+		No return value.
+	Registry Parameter
+		BackupFile		Backup Image Filename.
+*/
+
+VOID PrepareBackupFileName(
+	IN PERAM_EXTENSION		pEramExt,
+	IN PUNICODE_STRING		pRegParam
+ )
+{
+	/* local variables */
+	static WCHAR wszDef[] = L"";
+	static WCHAR wszBackupStub[] = L"\\??\\";
+	RTL_QUERY_REGISTRY_TABLE		ParamTable[2];
+	NTSTATUS		ntStat;
+	UNICODE_STRING	UniBackupFile;
+	KdPrint(("Eram PrepareBackupFileName start\n"));
+	/* initialize to empty */
+	pEramExt->wszBackupFileMain[0] = UNICODE_NULL;
+	RtlInitUnicodeString(&UniBackupFile, pEramExt->wszBackupFileMain);
+	UniBackupFile.MaximumLength = sizeof(pEramExt->wszBackupFileMain);
+	/* registry confirmation area initialization */
+	RtlZeroBytes(&ParamTable, sizeof(ParamTable));
+	/* collective area initialization (the last one is NULL) */
+	ParamTable[0].Flags = RTL_QUERY_REGISTRY_DIRECT;
+	ParamTable[0].Name = (PWSTR)L"BackupFile";
+	ParamTable[0].EntryContext = &UniBackupFile;
+	ParamTable[0].DefaultType = REG_SZ;
+	ParamTable[0].DefaultData = (LPWSTR)wszDef;
+	ParamTable[0].DefaultLength = sizeof(wszDef);
+	/* registry values collective inquiry */
+	ntStat = RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE | RTL_REGISTRY_OPTIONAL, pRegParam->Buffer, &(ParamTable[0]), NULL, NULL);
+	if (ntStat != STATUS_SUCCESS)	/* failed */
+	{
+		KdPrint(("Eram Warning:RtlQueryRegistryValues failed\n"));
+	}
+	/* Copy the \\?\\ prefix into the prefix field */
+#pragma warning(disable : 4127)
+	ASSERT(sizeof(pEramExt->wszBackupFile) == (sizeof(wszBackupStub) - sizeof(WCHAR)));
+#pragma warning(default : 4127)
+	RtlCopyBytes(pEramExt->wszBackupFile, wszBackupStub, sizeof(pEramExt->wszBackupFile));
+	KdPrint(("Eram PrepareBackupFileName end, Backup file \"%ls\"\n", pEramExt->wszBackupFileMain));
 }
 
 

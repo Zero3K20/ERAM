@@ -106,6 +106,8 @@ typedef struct {
 	BYTE			byAllocUnit;
 	BYTE			byMediaId;
 	CHAR			szDefDrv[3];
+	CHAR			szBackupFile[MAX_PATH];
+	DWORD			dwBackupInterval;
  } ERAMREGOPT, *PERAMREGOPT, FAR *LPERAMREGOPT;
 
 /* SETUPAPI function type definitions */
@@ -148,6 +150,8 @@ CHAR szSkipExternalCheck[] = "SkipExternalCheck";
 CHAR szSwapable[] = "Swapable";
 CHAR szSkipReportUsage[] = "SkipReportUsage";
 CHAR szMakeTempDir[] = "MakeTempDir";
+CHAR szBackupFile[] = "BackupFile";
+CHAR szBackupInterval[] = "BackupInterval";
 
 /* prototypes */
 BOOL WINAPI StatusDlgProc(HWND, UINT, WPARAM, LPARAM);
@@ -293,6 +297,22 @@ VOID WINAPI GetRegOption(LPERAMREGOPT lpEramOpt)
 	ReadRegValues(hgKey, szPage, REG_DWORD, &(lpEramOpt->dwSizePage), sizeof(lpEramOpt->dwSizePage), DISKMINPAGE);
 	/* Get the starting position of external memory */
 	ReadRegValues(hgKey, szExtStart, REG_DWORD, &(lpEramOpt->dwExtStart), sizeof(lpEramOpt->dwExtStart), 0);
+	/* Get the backup file path */
+	lpEramOpt->szBackupFile[0] = '\0';
+	uSize = sizeof(lpEramOpt->szBackupFile);
+	lRet = RegQueryValueEx(hgKey, szBackupFile, NULL, &dwType, (LPBYTE)(lpEramOpt->szBackupFile), &uSize);
+	if ((lRet != ERROR_SUCCESS) || (dwType != REG_SZ))
+	{
+		lpEramOpt->szBackupFile[0] = '\0';
+	}
+	/* Get the backup interval */
+	lpEramOpt->dwBackupInterval = 0;
+	uSize = sizeof(lpEramOpt->dwBackupInterval);
+	lRet = RegQueryValueEx(hgKey, szBackupInterval, NULL, &dwType, (LPBYTE)(&lpEramOpt->dwBackupInterval), &uSize);
+	if ((lRet != ERROR_SUCCESS) || (dwType != REG_DWORD))
+	{
+		lpEramOpt->dwBackupInterval = 0;
+	}
 }
 
 
@@ -494,6 +514,14 @@ VOID WINAPI SetPageOption(HWND hDlg, LPERAMREGOPT lpEramOpt)
 		Button_SetCheck(GetDlgItem(hDlg, IDC_CHECK_EXTSTART), 1);
 	}
 	EnableExtGroup(hDlg, (lpEramOpt->uOption.Bits.External != 0) ? TRUE : FALSE);
+	/* Set the backup file path */
+	hCtl = GetDlgItem(hDlg, IDC_EDIT_BACKUPFILE);
+	Edit_SetText(hCtl, (LPSTR)(lpEramOpt->szBackupFile));
+	Edit_LimitText(hCtl, MAX_PATH - 1);
+	/* Set the backup interval */
+	hCtl = GetDlgItem(hDlg, IDC_EDIT_BACKUP_INTERVAL);
+	SetDlgItemInt(hDlg, IDC_EDIT_BACKUP_INTERVAL, lpEramOpt->dwBackupInterval, FALSE);
+	Edit_LimitText(hCtl, 5);		/* max 99999 minutes */
 }
 
 
@@ -524,6 +552,8 @@ VOID WINAPI WmCommand(HWND hDlg, INT wId, HWND hWndCtl, UINT wNotifyCode)
 	case IDC_EDIT_MEDIAID:
 	case IDC_EDIT_PAGE:
 	case IDC_EDIT_EXTSTART_MB:
+	case IDC_EDIT_BACKUPFILE:
+	case IDC_EDIT_BACKUP_INTERVAL:
 		if (wNotifyCode == EN_CHANGE)
 		{
 			bUpdate = TRUE;
@@ -859,6 +889,10 @@ BOOL WINAPI GetPageOption(HWND hDlg, LPERAMREGOPT lpEramOpt)
 	{
 		lpEramOpt->dwExtStart = GetDlgItemInt(hDlg, IDC_EDIT_EXTSTART_MB, NULL, FALSE) * 0x100000;
 	}
+	/* Get the backup file path */
+	Edit_GetText(GetDlgItem(hDlg, IDC_EDIT_BACKUPFILE), (LPSTR)(lpEramOpt->szBackupFile), sizeof(lpEramOpt->szBackupFile));
+	/* Get the backup interval */
+	lpEramOpt->dwBackupInterval = GetDlgItemInt(hDlg, IDC_EDIT_BACKUP_INTERVAL, NULL, FALSE);
 	return TRUE;
 }
 
@@ -928,6 +962,16 @@ BOOL WINAPI SetRegOption(LPERAMREGOPT lpEramOpt)
 	}
 	/* Set the starting positioin of external memory */
 	if (RegSetValueEx(hgKey, szExtStart, 0, REG_DWORD, (LPBYTE)(&(lpEramOpt->dwExtStart)), sizeof(lpEramOpt->dwExtStart)) != ERROR_SUCCESS)
+	{
+		return FALSE;
+	}
+	/* Set the backup file path (empty string clears it) */
+	if (RegSetValueEx(hgKey, szBackupFile, 0, REG_SZ, (LPBYTE)(lpEramOpt->szBackupFile), (DWORD)(lstrlen(lpEramOpt->szBackupFile) + 1)) != ERROR_SUCCESS)
+	{
+		return FALSE;
+	}
+	/* Set the backup interval */
+	if (RegSetValueEx(hgKey, szBackupInterval, 0, REG_DWORD, (LPBYTE)(&(lpEramOpt->dwBackupInterval)), sizeof(lpEramOpt->dwBackupInterval)) != ERROR_SUCCESS)
 	{
 		return FALSE;
 	}
