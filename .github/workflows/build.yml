@@ -44,16 +44,18 @@ jobs:
           # it does not write standalone km\ headers to the Windows Kits directory.
           # Install the kernel-mode headers and libs via the official WDK NuGet packages.
           $nugetDir = "C:\WDK_NuGet"
+          $wdkX64PkgName = "Microsoft.Windows.WDK.x64"
+          $wdkX86PkgName = "Microsoft.Windows.WDK.x86"
           New-Item -ItemType Directory -Force -Path $nugetDir | Out-Null
-          Write-Host "Installing Microsoft.Windows.WDK.x64 NuGet package..."
-          nuget install Microsoft.Windows.WDK.x64 -OutputDirectory $nugetDir -ExcludeVersion -NonInteractive
-          Write-Host "Installing Microsoft.Windows.WDK.x86 NuGet package..."
-          nuget install Microsoft.Windows.WDK.x86 -OutputDirectory $nugetDir -ExcludeVersion -NonInteractive
+          Write-Host "Installing $wdkX64PkgName NuGet package..."
+          nuget install $wdkX64PkgName -OutputDirectory $nugetDir -ExcludeVersion -NonInteractive
+          Write-Host "Installing $wdkX86PkgName NuGet package..."
+          nuget install $wdkX86PkgName -OutputDirectory $nugetDir -ExcludeVersion -NonInteractive
 
           # Locate ntddk.h inside the x64 package (km headers are arch-independent)
-          $ntddkFile = Get-ChildItem "$nugetDir\Microsoft.Windows.WDK.x64" -Recurse -Filter "ntddk.h" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $ntddkFile = Get-ChildItem "$nugetDir\$wdkX64PkgName" -Recurse -Filter "ntddk.h" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $ntddkFile) {
-            throw "ntddk.h not found in Microsoft.Windows.WDK.x64 NuGet package"
+            throw "ntddk.h not found in $wdkX64PkgName NuGet package"
           }
           $kmInc = $ntddkFile.DirectoryName
           Write-Host "Found km headers at: $kmInc"
@@ -63,12 +65,24 @@ jobs:
           "DDK_INC_PATH=$ddk_inc" | Add-Content $env:GITHUB_ENV
           Write-Host "Set DDK_INC_PATH=$ddk_inc"
 
-          # Locate ntoskrnl.lib in each architecture package for DDK_LIB_PATH
-          $x64LibFile = Get-ChildItem "$nugetDir\Microsoft.Windows.WDK.x64" -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
-          $x86LibFile = Get-ChildItem "$nugetDir\Microsoft.Windows.WDK.x86" -Recurse -Filter "ntoskrnl.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $x86LibFile) { throw "ntoskrnl.lib not found in Microsoft.Windows.WDK.x86 NuGet package" }
-          if (-not $x64LibFile) { throw "ntoskrnl.lib not found in Microsoft.Windows.WDK.x64 NuGet package" }
-          $ddk_lib = "$($x86LibFile.DirectoryName);$($x64LibFile.DirectoryName)"
+          # Derive the km lib base from the km include path:
+          # e.g. ...\c\Include\10.0.26100.0\km -> ...\c\Lib\10.0.26100.0\km
+          $kmLibBase = $kmInc.Replace('\Include\', '\Lib\')
+          $x64LibDir = "$kmLibBase\x64"
+          $x86LibDir = "$kmLibBase\x86"
+          if (-not (Test-Path $x64LibDir)) {
+            throw "WDK x64 km lib directory not found: $x64LibDir"
+          }
+          # The x64 NuGet package typically ships both x64 and x86 km libs.
+          # If not present, fall back to the x86 NuGet package (same structure).
+          if (-not (Test-Path $x86LibDir)) {
+            $x86LibDirAlt = "$nugetDir\$wdkX86PkgName" + $kmLibBase.Substring(("$nugetDir\$wdkX64PkgName").Length)
+            $x86LibDir = "$x86LibDirAlt\x86"
+            if (-not (Test-Path $x86LibDir)) {
+              throw "WDK x86 km lib directory not found in either x64 or x86 NuGet package (tried: $kmLibBase\x86 and $x86LibDir)"
+            }
+          }
+          $ddk_lib = "$x86LibDir;$x64LibDir"
           "DDK_LIB_PATH=$ddk_lib" | Add-Content $env:GITHUB_ENV
           Write-Host "Set DDK_LIB_PATH=$ddk_lib"
 
