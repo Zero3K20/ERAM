@@ -139,6 +139,12 @@ jobs:
       - name: Build x64
         run: msbuild eram.sln /p:Configuration=Release /p:Platform=x64 /m /t:Build /v:minimal /p:DDK_LIB_PATH="$env:DDK_LIB_PATH_X64"
 
+      - name: Build eramui (control panel applet) x86
+        run: msbuild eramui\eram.sln /p:Configuration=Release /p:Platform=x86 /m /t:Build /v:minimal
+
+      - name: Build eramui (control panel applet) x64
+        run: msbuild eramui\eram.sln /p:Configuration=Release /p:Platform=x64 /m /t:Build /v:minimal
+
       - name: Create test signing certificate
         shell: powershell
         run: |
@@ -190,12 +196,16 @@ jobs:
           foreach ($arch in "x86", "x64") {
             $pkg = "dist\eram-$arch"
             New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+            # Driver (architecture-specific build output)
             Copy-Item "Release\$arch\eram.sys" $pkg
+            # Control panel applet: use the freshly-built version from eramui
+            Copy-Item "eramui\Release\$arch\eram.cpl" "$pkg\eram.cpl"
+            # INF for proper installation (handles x64 Windows 7 signing)
+            Copy-Item eram.inf $pkg
             Copy-Item install.bat  $pkg
             Copy-Item uninstall.bat $pkg
             Copy-Item LICENSE $pkg
             Copy-Item readme.md $pkg
-            Copy-Item eram.cpl $pkg
             Compress-Archive -Path "$pkg\*" -DestinationPath "dist\eram-$arch.zip" -Force
             Write-Host "Created: dist\eram-$arch.zip"
           }

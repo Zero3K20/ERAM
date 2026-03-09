@@ -55,15 +55,14 @@ if exist "%DRVDIR%\eram.sys" (
 
 :: Unregister and remove control panel applet
 echo Removing control panel applet...
-if exist "%SYSDIR%\eramnt.cpl" (
-    regsvr32 /s /u "%SYSDIR%\eramnt.cpl" >nul 2>&1
-    del /f /q "%SYSDIR%\eramnt.cpl" >nul 2>&1
-    if exist "%SYSDIR%\eramnt.cpl" (
-        echo WARNING: eramnt.cpl could not be deleted now.
+if exist "%SYSDIR%\eram.cpl" (
+    del /f /q "%SYSDIR%\eram.cpl" >nul 2>&1
+    if exist "%SYSDIR%\eram.cpl" (
+        echo WARNING: eram.cpl could not be deleted now.
         echo It will need to be deleted manually after reboot:
-        echo   %SYSDIR%\eramnt.cpl
+        echo   %SYSDIR%\eram.cpl
     ) else (
-        echo eramnt.cpl removed.
+        echo eram.cpl removed.
     )
 )
 
