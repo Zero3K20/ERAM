@@ -1310,7 +1310,7 @@ VOID CALLBACK EramUninstall(HWND hWnd, HINSTANCE hInstance, LPSTR lpszCmdLine, I
 		MessageBox(hWnd, szMsg, szWinName, MB_OK);
 	}
 	/* Delete Control Panel */
-	wsprintf(szFile, "%s\\eramnt.cpl", szSysDir);
+	wsprintf(szFile, "%s\\eram.cpl", szSysDir);
 	if (MoveFileEx(szFile, NULL, MOVEFILE_DELAY_UNTIL_REBOOT) == FALSE)
 	{
 		wsprintf(szMsg, GetResStr(IDS_ERR_REMOVE, szText, sizeof(szText)), szFile, GetLastError());

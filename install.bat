@@ -48,6 +48,23 @@ if not exist "%SCRIPTDIR%eram.sys" (
     exit /b 1
 )
 
+:: ---------------------------------------------------------------------------
+:: Preferred: INF-based installation (handles signing on Windows 7 x64)
+:: ---------------------------------------------------------------------------
+if exist "%SCRIPTDIR%eram.inf" (
+    echo Installing via eram.inf ...
+    pnputil /add-driver "%SCRIPTDIR%eram.inf" /install >nul 2>&1
+    if !ERRORLEVEL! equ 0 (
+        echo ERAM driver installed via INF successfully.
+        goto PostInstall
+    )
+    echo INFO: pnputil install returned !ERRORLEVEL!, falling back to manual setup.
+)
+
+:: ---------------------------------------------------------------------------
+:: Fallback: manual driver and service setup
+:: ---------------------------------------------------------------------------
+
 :: Copy driver
 echo Copying eram.sys to %DRVDIR%...
 copy /Y "%SCRIPTDIR%eram.sys" "%DRVDIR%\eram.sys" >nul
@@ -59,15 +76,14 @@ if %ERRORLEVEL% neq 0 (
 )
 echo eram.sys copied successfully.
 
-:: Copy and register control panel applet if it exists
+:: Copy control panel applet if it exists
 if exist "%SCRIPTDIR%eram.cpl" (
     echo Copying eram.cpl to %SYSDIR%...
-    copy /Y "%SCRIPTDIR%eram.cpl" "%SYSDIR%\eramnt.cpl" >nul
+    copy /Y "%SCRIPTDIR%eram.cpl" "%SYSDIR%\eram.cpl" >nul
     if %ERRORLEVEL% neq 0 (
         echo WARNING: Failed to copy eram.cpl. Control panel applet may not be available.
     ) else (
-        regsvr32 /s "%SYSDIR%\eramnt.cpl"
-        echo eram.cpl installed as eramnt.cpl.
+        echo eram.cpl installed.
     )
 )
 
@@ -91,10 +107,11 @@ echo ERAM service created successfully.
 :: Configure ERAM registry parameters
 echo Configuring ERAM registry settings...
 
-:: Default RAM disk size: 1 GB (262144 pages of 4 KB each)
-reg add "HKLM\SYSTEM\CurrentControlSet\Services\Eram\Parameters" /v "Page"               /t REG_DWORD /d 262144 /f >nul
-reg add "HKLM\SYSTEM\CurrentControlSet\Services\Eram\Parameters" /v "DriveLetter"        /t REG_SZ    /d "Z:"    /f >nul
-reg add "HKLM\SYSTEM\CurrentControlSet\Services\Eram\Parameters" /v "AllocUnit"          /t REG_DWORD /d 2       /f >nul
+:: Default RAM disk size: 4 GB (1048576 pages of 4 KB each), drive R:
+:: (matches the defaults in eram.inf so both install paths produce the same result)
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Eram\Parameters" /v "Page"               /t REG_DWORD /d 1048576 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Eram\Parameters" /v "DriveLetter"        /t REG_SZ    /d "R:"    /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Eram\Parameters" /v "AllocUnit"          /t REG_DWORD /d 32      /f >nul
 reg add "HKLM\SYSTEM\CurrentControlSet\Services\Eram\Parameters" /v "MediaId"            /t REG_DWORD /d 248     /f >nul
 reg add "HKLM\SYSTEM\CurrentControlSet\Services\Eram\Parameters" /v "RootDirEntries"     /t REG_DWORD /d 128     /f >nul
 reg add "HKLM\SYSTEM\CurrentControlSet\Services\Eram\Parameters" /v "NonPaged"           /t REG_DWORD /d 0       /f >nul
@@ -116,6 +133,8 @@ if not exist "%ProgramFiles%\ERAM" mkdir "%ProgramFiles%\ERAM"
 copy /Y "%SCRIPTDIR%uninstall.bat" "%ProgramFiles%\ERAM\uninstall.bat" >nul
 
 :: Add uninstall entry to Programs and Features
+:: (When installed via INF the entry is written by eram.inf's AddRegistry section;
+::  this block handles the fallback manual install path.)
 echo Adding uninstall entry...
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Eram" /v "DisplayName"     /t REG_SZ    /d "ERAM RAM Disk"                          /f >nul
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Eram" /v "UninstallString" /t REG_SZ    /d "\"%ProgramFiles%\ERAM\uninstall.bat\""  /f >nul
@@ -124,11 +143,12 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Eram" /v "Disp
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Eram" /v "NoModify"        /t REG_DWORD /d 1                                        /f >nul
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Eram" /v "NoRepair"        /t REG_DWORD /d 1                                        /f >nul
 
+:PostInstall
 echo.
 echo ERAM has been installed successfully!
 echo.
-echo The RAM Disk will be available as drive Z: after reboot (default size: 1 GB).
-echo You can change settings using the ERAM Control Panel applet (eramnt.cpl).
+echo The RAM Disk will be available as drive R: after reboot (default size: 4 GB).
+echo You can change settings using the ERAM Control Panel applet (eram.cpl).
 echo.
 echo NOTE: On 64-bit Windows, Driver Signature Enforcement must be disabled for
 echo unsigned drivers. You can do this by running the following command and
