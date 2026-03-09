@@ -287,6 +287,13 @@ extern __declspec(dllimport) ULONG NtBuildNumber;
 #define	SEC_COMMIT	(0x8000000)
 #endif
 
+/* KeInitializeSpinLock is not exported from ntoskrnl.exe on AMD64 (it is an
+   inline function in the WDK headers).  Define it as a macro so that the
+   driver does not generate an unresolved import on Windows 7 x64. */
+#ifdef _WIN64
+#define KeInitializeSpinLock(SpinLock)	(*(SpinLock) = 0)
+#endif
+
 //------  Functions to be used at all times in normal use
 
 NTSTATUS EramCreateClose(
