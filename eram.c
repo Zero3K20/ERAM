@@ -1867,7 +1867,7 @@ NTSTATUS DriverEntry(
 	/* Get the max length of registry path */
 	RegParam.MaximumLength = (WORD)(pRegPath->Length + sizeof(SUBKEY_WSTRING));
 	/* memory allocation for work */
-	pPool = ExAllocatePool2(POOL_FLAG_PAGED, sizeof(*pFatId) + RegParam.MaximumLength, ERAM_POOL_TAG);
+	pPool = ExAllocatePoolWithTag(PagedPool, sizeof(*pFatId) + RegParam.MaximumLength, ERAM_POOL_TAG);
 	if (pPool == NULL)		/* allocation failed */
 	{
 		KdPrint(("Eram ExAllocatePool failed\n"));
@@ -2068,7 +2068,7 @@ NTSTATUS EramInitDisk(
 	/* ERAM Info Settings */
 	pEramExt->bsHiddenSecs = pFatId->BPB_ext.bsHiddenSecs;
 	/* Win32 device name area allocation */
-	pEramExt->Win32Name.Buffer = ExAllocatePool2(POOL_FLAG_PAGED, (sizeof(WIN32_PATH) + sizeof(DEFAULT_DRV)), ERAM_POOL_TAG);
+	pEramExt->Win32Name.Buffer = ExAllocatePoolWithTag(PagedPool, (sizeof(WIN32_PATH) + sizeof(DEFAULT_DRV)), ERAM_POOL_TAG);
 	if (pEramExt->Win32Name.Buffer == NULL)		/* allocation failed */
 	{
 		EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_DEVICE_NAME_ALLOC_FAILED, NULL);
@@ -2274,17 +2274,17 @@ BOOLEAN OsAlloc(
  )
 {
 	/* local variables */
-	POOL_FLAGS	fFlags;
-	fFlags = (pEramExt->uOptflag.Bits.NonPaged != 0) ? POOL_FLAG_NON_PAGED : POOL_FLAG_PAGED;
+	POOL_TYPE	fPoolType;
+	fPoolType = (pEramExt->uOptflag.Bits.NonPaged != 0) ? NonPagedPool : PagedPool;
 
 	KdPrint(( "Eram Size=%dmb\n" , uMemSize/(1024*1024) ));
 
-	pEramExt->pPageBase = ExAllocatePool2(fFlags, uMemSize, ERAM_POOL_TAG);
+	pEramExt->pPageBase = ExAllocatePoolWithTag(fPoolType, uMemSize, ERAM_POOL_TAG);
 	if (pEramExt->pPageBase == NULL)	/* allocation failed */
 	{
 		KdPrint(("Eram ExAllocatePool failed, %ld bytes, nonpaged=%d\n", uMemSize, (UINT)(pEramExt->uOptflag.Bits.NonPaged)));
 		EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_DISK_ALLOC_FAILED, NULL);
-		CalcAvailSize(pDrvObj, fFlags, uMemSize);
+		CalcAvailSize(pDrvObj, fPoolType, uMemSize);
 		return FALSE;
 	}
 	return TRUE;
@@ -2303,7 +2303,7 @@ BOOLEAN OsAlloc(
 
 VOID CalcAvailSize(
 	IN PDRIVER_OBJECT	pDrvObj,
-	IN POOL_FLAGS		fFlags,
+	IN POOL_TYPE		fPoolType,
 	IN SIZE_T			uMemSize
  )
 {
@@ -2316,7 +2316,7 @@ VOID CalcAvailSize(
 	{
 		/* memory allocation */
 		uMemSize -= (DISKMINPAGE << PAGE_SIZE_LOG2);
-		pBuf = ExAllocatePool2(fFlags, uMemSize, ERAM_POOL_TAG);
+		pBuf = ExAllocatePoolWithTag(fPoolType, uMemSize, ERAM_POOL_TAG);
 	}
 	if (pBuf == NULL)		/* allocation failed */
 	{
@@ -2498,7 +2498,7 @@ VOID CheckSwitch(
 	#define	REGOPTNUM	(14)
 	#define	REGOPTSIZE	(REGOPTNUM * sizeof(*pParamTable))
 	/* Allocate the memory for inquiry */
-	pParamTable = ExAllocatePool2(POOL_FLAG_PAGED, REGOPTSIZE, ERAM_POOL_TAG);
+	pParamTable = ExAllocatePoolWithTag(PagedPool, REGOPTSIZE, ERAM_POOL_TAG);
 	if (pParamTable != NULL)	/* Success */
 	{
 		/* registry confirmation area initialization */
@@ -3663,7 +3663,7 @@ BOOLEAN GetExternalStart(
 	static WCHAR		szwNoLowMem[] = L"NOLOWMEM";
 	KdPrint(("Eram GetExternalStart start\n"));
 	uSize = 512 * sizeof(WCHAR);
-	pBuf = ExAllocatePool2(POOL_FLAG_PAGED, uSize, ERAM_POOL_TAG);
+	pBuf = ExAllocatePoolWithTag(PagedPool, uSize, ERAM_POOL_TAG);
 	if (pBuf == NULL)		/* allocation failed */
 	{
 		EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_OPTION_WORK_ALLOC_FAILED, NULL);
