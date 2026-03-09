@@ -62,6 +62,7 @@
 #include <regstr.h>
 #include <setupapi.h>
 #include <dbt.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include "eramui.h"
 
@@ -107,7 +108,7 @@ typedef struct {
 	BYTE			byMediaId;
 	CHAR			szDefDrv[3];
 	CHAR			szBackupFile[MAX_PATH];
-	DWORD			dwBackupInterval;
+	DWORD			dwBackupTime;
  } ERAMREGOPT, *PERAMREGOPT, FAR *LPERAMREGOPT;
 
 /* SETUPAPI function type definitions */
@@ -151,7 +152,7 @@ CHAR szSwapable[] = "Swapable";
 CHAR szSkipReportUsage[] = "SkipReportUsage";
 CHAR szMakeTempDir[] = "MakeTempDir";
 CHAR szBackupFile[] = "BackupFile";
-CHAR szBackupInterval[] = "BackupInterval";
+CHAR szBackupTime[] = "BackupTime";
 
 /* prototypes */
 BOOL WINAPI StatusDlgProc(HWND, UINT, WPARAM, LPARAM);
@@ -305,13 +306,13 @@ VOID WINAPI GetRegOption(LPERAMREGOPT lpEramOpt)
 	{
 		lpEramOpt->szBackupFile[0] = '\0';
 	}
-	/* Get the backup interval */
-	lpEramOpt->dwBackupInterval = 0;
-	uSize = sizeof(lpEramOpt->dwBackupInterval);
-	lRet = RegQueryValueEx(hgKey, szBackupInterval, NULL, &dwType, (LPBYTE)(&lpEramOpt->dwBackupInterval), &uSize);
+	/* Get the backup time of day (minutes since midnight, 0xFFFFFFFF=disabled) */
+	lpEramOpt->dwBackupTime = 0xFFFFFFFF;
+	uSize = sizeof(lpEramOpt->dwBackupTime);
+	lRet = RegQueryValueEx(hgKey, szBackupTime, NULL, &dwType, (LPBYTE)(&lpEramOpt->dwBackupTime), &uSize);
 	if ((lRet != ERROR_SUCCESS) || (dwType != REG_DWORD))
 	{
-		lpEramOpt->dwBackupInterval = 0;
+		lpEramOpt->dwBackupTime = 0xFFFFFFFF;
 	}
 }
 
@@ -518,10 +519,19 @@ VOID WINAPI SetPageOption(HWND hDlg, LPERAMREGOPT lpEramOpt)
 	hCtl = GetDlgItem(hDlg, IDC_EDIT_BACKUPFILE);
 	Edit_SetText(hCtl, (LPSTR)(lpEramOpt->szBackupFile));
 	Edit_LimitText(hCtl, MAX_PATH - 1);
-	/* Set the backup interval */
+	/* Set the backup time of day */
 	hCtl = GetDlgItem(hDlg, IDC_EDIT_BACKUP_INTERVAL);
-	SetDlgItemInt(hDlg, IDC_EDIT_BACKUP_INTERVAL, lpEramOpt->dwBackupInterval, FALSE);
-	Edit_LimitText(hCtl, 5);		/* max 99999 minutes */
+	if (lpEramOpt->dwBackupTime <= 1439)
+	{
+		CHAR szTime[8];		/* "HH:MM" + null, with room to spare */
+		wsprintf(szTime, "%02u:%02u", lpEramOpt->dwBackupTime / 60, lpEramOpt->dwBackupTime % 60);
+		Edit_SetText(hCtl, szTime);
+	}
+	else
+	{
+		Edit_SetText(hCtl, "");
+	}
+	Edit_LimitText(hCtl, 5);		/* "HH:MM" = 5 chars */
 }
 
 
@@ -885,8 +895,29 @@ BOOL WINAPI GetPageOption(HWND hDlg, LPERAMREGOPT lpEramOpt)
 	}
 	/* Get the backup file path */
 	Edit_GetText(GetDlgItem(hDlg, IDC_EDIT_BACKUPFILE), (LPSTR)(lpEramOpt->szBackupFile), sizeof(lpEramOpt->szBackupFile));
-	/* Get the backup interval */
-	lpEramOpt->dwBackupInterval = GetDlgItemInt(hDlg, IDC_EDIT_BACKUP_INTERVAL, NULL, FALSE);
+	/* Get and parse the backup time of day (HH:MM format) */
+	{
+		CHAR szTime[16];
+		UINT uHour = 0, uMin = 0;
+		int nCharsConsumed = 0;
+		szTime[0] = '\0';
+		Edit_GetText(GetDlgItem(hDlg, IDC_EDIT_BACKUP_INTERVAL), szTime, sizeof(szTime));
+		if (szTime[0] == '\0')
+		{
+			lpEramOpt->dwBackupTime = 0xFFFFFFFF;	/* disabled */
+		}
+		else if ((sscanf(szTime, "%u:%u%n", &uHour, &uMin, &nCharsConsumed) == 2) &&
+		         (szTime[nCharsConsumed] == '\0') &&
+		         (uHour <= 23) && (uMin <= 59))
+		{
+			lpEramOpt->dwBackupTime = (DWORD)(uHour * 60 + uMin);
+		}
+		else
+		{
+			MessageBox(hDlg, GetResStr(IDS_ERR_INVALID_BACKUP_TIME, szText, sizeof(szText)), szWinName, MB_OK | MB_ICONEXCLAMATION | MB_SETFOREGROUND);
+			return FALSE;
+		}
+	}
 	return TRUE;
 }
 
@@ -964,8 +995,8 @@ BOOL WINAPI SetRegOption(LPERAMREGOPT lpEramOpt)
 	{
 		return FALSE;
 	}
-	/* Set the backup interval */
-	if (RegSetValueEx(hgKey, szBackupInterval, 0, REG_DWORD, (LPBYTE)(&(lpEramOpt->dwBackupInterval)), sizeof(lpEramOpt->dwBackupInterval)) != ERROR_SUCCESS)
+	/* Set the backup time of day */
+	if (RegSetValueEx(hgKey, szBackupTime, 0, REG_DWORD, (LPBYTE)(&(lpEramOpt->dwBackupTime)), sizeof(lpEramOpt->dwBackupTime)) != ERROR_SUCCESS)
 	{
 		return FALSE;
 	}

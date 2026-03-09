@@ -38,6 +38,7 @@
 #define IDS_START_TYPE_4                33
 #define IDS_WARN_LIMIT_MAX_SIZE         34
 #define IDS_WARN_LIMIT_ROOTDIR          35
+#define IDS_ERR_INVALID_BACKUP_TIME     36
 #define IDD_SETUP                       101
 #define IDI_ICON                        102
 #define IDC_COMBO_DRIVE                 103

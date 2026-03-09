@@ -81,9 +81,9 @@ BEGIN
     GROUPBOX        " Backup ",IDC_STATIC,5,205,175,50,WS_GROUP
     LTEXT           "Backup File(&B):",IDC_STATIC_BACKUP_FILE,15,218,55,8
     EDITTEXT        IDC_EDIT_BACKUPFILE,73,216,100,12,ES_AUTOHSCROLL
-    LTEXT           "Interval (min):",IDC_STATIC_BACKUP_INTERVAL,15,234,55,8
-    EDITTEXT        IDC_EDIT_BACKUP_INTERVAL,73,232,30,12,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "(0=off, backup on shutdown only)",IDC_STATIC_BACKUP_MINUTES,108,234,65,16
+    LTEXT           "Daily Time(&T):",IDC_STATIC_BACKUP_INTERVAL,15,234,55,8
+    EDITTEXT        IDC_EDIT_BACKUP_INTERVAL,73,232,30,12,ES_AUTOHSCROLL
+    LTEXT           "(HH:MM, blank=off)",IDC_STATIC_BACKUP_MINUTES,108,234,65,16
     DEFPUSHBUTTON   "Ok",IDOK,75,248,30,15,WS_GROUP
     PUSHBUTTON      "Cancel",IDCANCEL,110,248,30,15
     PUSHBUTTON      "Modify",IDC_UPDATE,145,248,30,15
@@ -203,6 +203,7 @@ BEGIN
     IDS_START_TYPE_4        "Disabled"
     IDS_WARN_LIMIT_MAX_SIZE "The address space is being overflowed, please limit the disk size to %dKB."
     IDS_WARN_LIMIT_ROOTDIR  "The configured disk size is too small. The Root Dir Entries option has been reset to its default setting."
+    IDS_ERR_INVALID_BACKUP_TIME "Invalid backup time. Please enter a time in HH:MM format (e.g. 03:00), or leave blank to disable."
 END
 
 #endif    // English (U.S.) resources
