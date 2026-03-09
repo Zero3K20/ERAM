@@ -152,6 +152,7 @@
       <TypeLibraryName>.\Release\eram.tlb</TypeLibraryName>
       <MkTypLibCompatible>true</MkTypLibCompatible>
       <RedirectOutputAndErrors>NUL</RedirectOutputAndErrors>
+      <TargetEnvironment>X64</TargetEnvironment>
     </Midl>
     <ResourceCompile>
       <Culture>0x0411</Culture>
@@ -236,6 +237,7 @@
       <TypeLibraryName>.\Debug\eram.tlb</TypeLibraryName>
       <MkTypLibCompatible>true</MkTypLibCompatible>
       <RedirectOutputAndErrors>NUL</RedirectOutputAndErrors>
+      <TargetEnvironment>X64</TargetEnvironment>
     </Midl>
     <ResourceCompile>
       <Culture>0x0411</Culture>
