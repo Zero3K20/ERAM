@@ -1800,7 +1800,7 @@ BOOLEAN EramRestoreDisk(
 
 
 /* EramBackupThread
-		Periodic backup thread.  Wakes up at the configured interval and
+		Daily backup thread.  Wakes up at the configured time of day and
 		saves the RAM disk to the backup file.
 	Parameters
 		pContext	The pointer to an ERAM_EXTENTION structure.
@@ -1814,16 +1814,38 @@ VOID EramBackupThread(
 {
 	/* local variables */
 	PERAM_EXTENSION		pEramExt;
-	LARGE_INTEGER		llInterval;
+	LARGE_INTEGER		llNow, llLocal, llWait;
+	TIME_FIELDS			tf;
+	ULONG				uCurrentMinutes, uWaitMinutes;
 	KdPrint(("EramBackupThread start\n"));
 	pEramExt = (PERAM_EXTENSION)pContext;
 	ASSERT(pEramExt != NULL);
 	KeSetPriorityThread(KeGetCurrentThread(), LOW_REALTIME_PRIORITY);
 	while (pEramExt->bThreadStop == 0)
 	{
-		/* Sleep for the backup interval (in minutes), or until woken */
-		llInterval.QuadPart = -(LONGLONG)pEramExt->uBackupInterval * 60 * 10000000;
-		KeWaitForSingleObject(&(pEramExt->BackupEvent), Executive, KernelMode, FALSE, &llInterval);
+		/* Get the current local time */
+		KeQuerySystemTime(&llNow);
+		ExSystemTimeToLocalTime(&llNow, &llLocal);
+		RtlTimeToTimeFields(&llLocal, &tf);
+		uCurrentMinutes = (ULONG)tf.Hour * 60 + (ULONG)tf.Minute;
+		/* Calculate minutes to wait until the next occurrence of the backup time.
+		   uWaitMinutes is always >= 1: if past (or equal to) the target today, wait
+		   until the same time tomorrow (1440 min = 24 hours). */
+		if (pEramExt->uBackupTime > uCurrentMinutes)
+			uWaitMinutes = pEramExt->uBackupTime - uCurrentMinutes;
+		else
+			uWaitMinutes = 1440 - uCurrentMinutes + pEramExt->uBackupTime;
+		/* Compute the sleep duration in 100-nanosecond intervals.
+		   Subtract the seconds already elapsed in the current minute to land
+		   closer to the exact target time. uWaitMinutes >= 1 guarantees that
+		   uWaitMinutes*60 - tf.Second >= 1 (since tf.Second <= 59). */
+		{
+			LONGLONG llSeconds = (LONGLONG)uWaitMinutes * 60 - (LONGLONG)tf.Second;
+			if (llSeconds < 1)
+				llSeconds = 1;	/* safety guard */
+			llWait.QuadPart = -llSeconds * 10000000;
+		}
+		KeWaitForSingleObject(&(pEramExt->BackupEvent), Executive, KernelMode, FALSE, &llWait);
 		/* Clear event so we wait again next iteration */
 		KeClearEvent(&(pEramExt->BackupEvent));
 		if (pEramExt->bThreadStop != 0)		/* thread stop request */
@@ -1831,8 +1853,8 @@ VOID EramBackupThread(
 			KdPrint(("EramBackupThread: stop requested\n"));
 			break;
 		}
-		/* Perform the periodic backup */
-		KdPrint(("EramBackupThread: performing periodic backup\n"));
+		/* Perform the daily backup */
+		KdPrint(("EramBackupThread: performing daily backup\n"));
 		EramBackupDisk(pEramExt);
 	}
 	KdPrint(("EramBackupThread end\n"));
@@ -2098,9 +2120,9 @@ NTSTATUS EramInitDisk(
 		ExFreePool(pEramExt->Win32Name.Buffer);
 		pEramExt->Win32Name.Buffer = NULL;
 	}
-	/* Start the periodic backup thread if interval and file are configured */
+	/* Start the daily backup thread if a backup time and file are configured */
 	if ((ntStat == STATUS_SUCCESS) &&
-		(pEramExt->uBackupInterval > 0) &&
+		(pEramExt->uBackupTime <= 1439) &&
 		(pEramExt->wszBackupFileMain[0] != UNICODE_NULL))
 	{
 		HANDLE hBackupThread;
@@ -2483,7 +2505,7 @@ VOID CheckSwitch(
 	ULONG			OptSwapable,		defOptSwapable = 0;
 	ULONG			OptSkipReport,		defOptSkipReport = 0;
 	ULONG			OptMakeTemp,		defOptMakeTemp = 0;
-	ULONG			BackupInterval,		defBackupInterval = 0;
+	ULONG			BackupTime,		defBackupTime = 0xFFFFFFFF;
 	ERAM_OPTFLAG	uOptWork;
 	UINT			loopi;
 	ULONGLONG		ulPageT;
@@ -2494,7 +2516,7 @@ VOID CheckSwitch(
 	/* REGOPTNUM = number of registry parameters (entries 0..N-2) + 1 NULL terminator
 	   Entries: AllocUnit, DriveLetter, RootDirEntries, MediaId, Page, ExtStart,
 	            NonPaged, External, SkipExternalCheck, Swapable, SkipReportUsage,
-	            MakeTempDir, BackupInterval  (13 params + 1 NULL = 14) */
+	            MakeTempDir, BackupTime  (13 params + 1 NULL = 14) */
 	#define	REGOPTNUM	(14)
 	#define	REGOPTSIZE	(REGOPTNUM * sizeof(*pParamTable))
 	/* Allocate the memory for inquiry */
@@ -2548,9 +2570,9 @@ VOID CheckSwitch(
 		pParamTable[11].Name = (PWSTR)L"MakeTempDir";
 		pParamTable[11].EntryContext = &OptMakeTemp;
 		pParamTable[11].DefaultData = &defOptMakeTemp;
-		pParamTable[12].Name = (PWSTR)L"BackupInterval";
-		pParamTable[12].EntryContext = &BackupInterval;
-		pParamTable[12].DefaultData = &defBackupInterval;
+		pParamTable[12].Name = (PWSTR)L"BackupTime";
+		pParamTable[12].EntryContext = &BackupTime;
+		pParamTable[12].DefaultData = &defBackupTime;
 		bDefault = FALSE;
 		/* registry values collective inquiry */
 		ntStat = RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE | RTL_REGISTRY_OPTIONAL, pRegParam->Buffer, pParamTable, NULL, NULL);
@@ -2576,7 +2598,7 @@ VOID CheckSwitch(
 		OptSwapable = defOptSwapable;
 		OptSkipReport = defOptSkipReport;
 		OptMakeTemp = defOptMakeTemp;
-		BackupInterval = defBackupInterval;
+		BackupTime = defBackupTime;
 	}
 	/* Build option flags from individual registry keys */
 	uOptWork.dwOptflag = 0;
@@ -2658,8 +2680,8 @@ VOID CheckSwitch(
 	PrepareVolumeLabel(pEramExt, pFatId, pRegParam);
 	/* Prepare for external filename */
 	PrepareExtFileName(pEramExt, pFatId, pRegParam);
-	/* Prepare for backup filename and interval */
-	pEramExt->uBackupInterval = BackupInterval;
+	/* Prepare for backup filename and time of day */
+	pEramExt->uBackupTime = BackupTime;
 	PrepareBackupFileName(pEramExt, pRegParam);
 	KdPrint(("Eram CheckSwitch end\n"));
 }

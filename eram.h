@@ -165,7 +165,7 @@ typedef struct {
 	BYTE				bThreadStop;	// Thread Stop Request
 	WCHAR				wszBackupFile[4];		// Backup file path prefix (\\?\\)
 	WCHAR				wszBackupFileMain[260];	// Backup file path (user-specified)
-	ULONG				uBackupInterval;		// Backup interval in minutes (0=disabled)
+	ULONG				uBackupTime;			// Backup time of day in minutes since midnight (>=1440=disabled)
 	PVOID				pBackupThreadObject;	// Periodic backup thread object
 	KEVENT				BackupEvent;			// Event to wake/stop backup thread
  } ERAM_EXTENSION, *PERAM_EXTENSION;
