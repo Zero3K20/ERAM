@@ -10,12 +10,9 @@ ERAM v2.30 is an Opensource RAM Disk made by Hideaki Okubo (okubo at msh.biglobe
 2. Right-click `install.bat` and select **Run as administrator**.
 3. Follow the on-screen prompts and reboot when asked.
 
-> **Note for 64-bit Windows:** Driver Signature Enforcement must be disabled for unsigned drivers. Run the following command in an elevated Command Prompt before installing, then reboot:
-> ```
-> bcdedit /set testsigning on
-> ```
+> **Note for 64-bit Windows:** The installer automatically enables test signing mode (`bcdedit /set testsigning on`) so the unsigned driver can load on 64-bit Windows. If the automatic step fails, run the command manually in an elevated Command Prompt and reboot before installing.
 
-After installing, the RAM Disk will be available as drive **Z:** with a default size of **1 GB**, which can be changed by running the ERAM Control Panel applet (press <kbd>Win</kbd> + <kbd>R</kbd> and type `eramnt.cpl`).
+After installing, the RAM Disk will be available as drive **R:** with a default size of **4 GB**, which can be changed by running the ERAM Control Panel applet (press <kbd>Win</kbd> + <kbd>R</kbd> and type `eram.cpl`).
 
 ## Uninstall Instructions
 
