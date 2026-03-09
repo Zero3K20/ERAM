@@ -116,8 +116,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,20,0,0
- PRODUCTVERSION 2,20,0,0
+ FILEVERSION 2,71,0,0
+ PRODUCTVERSION 2,71,0,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -135,12 +135,12 @@ BEGIN
             VALUE "Comments", "ERAM\0"
             VALUE "CompanyName", "*Error15 & Zero3K\0"
             VALUE "FileDescription", "ERAM Applet\0"
-            VALUE "FileVersion", "2.24\0"
+            VALUE "FileVersion", "2.71\0"
             VALUE "InternalName", "eram.cpl\0"
-            VALUE "LegalCopyright", "Copyright (C) 1999-20018 *Error15 & Zero3K\0"
+            VALUE "LegalCopyright", "Copyright (C) 1999-2026 *Error15 & Zero3K\0"
             VALUE "OriginalFilename", "eram.cpl\0"
             VALUE "ProductName", "ERAM\0"
-            VALUE "ProductVersion", "2.24\0"
+            VALUE "ProductVersion", "2.71\0"
         END
     END
     BLOCK "VarFileInfo"
