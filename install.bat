@@ -27,8 +27,12 @@ if "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
     exit /b 1
 )
 :: Handle 32-bit process running on 64-bit Windows (WOW64)
+set WOW64=0
 if defined PROCESSOR_ARCHITEW6432 (
-    if "%PROCESSOR_ARCHITEW6432%"=="AMD64" set ARCH=x64
+    if "%PROCESSOR_ARCHITEW6432%"=="AMD64" (
+        set ARCH=x64
+        set WOW64=1
+    )
 )
 
 echo Detected architecture: %ARCH%
@@ -38,6 +42,16 @@ echo.
 set SYSDIR=%SystemRoot%\System32
 set DRVDIR=%SYSDIR%\drivers
 set SCRIPTDIR=%~dp0
+
+:: When this script runs as a 32-bit process on 64-bit Windows the WOW64
+:: file-system redirector silently maps %SystemRoot%\System32 to SysWOW64.
+:: That would copy eram.sys to the wrong folder while the service entry
+:: still points at the real System32\drivers.  Use the Sysnative alias to
+:: bypass the redirector and reach the actual 64-bit System32 tree.
+if %WOW64%==1 (
+    set SYSDIR=%SystemRoot%\Sysnative
+    set DRVDIR=%SystemRoot%\Sysnative\drivers
+)
 
 :: Verify that eram.sys exists
 if not exist "%SCRIPTDIR%eram.sys" (
@@ -54,6 +68,13 @@ if not exist "%SCRIPTDIR%eram.sys" (
 if exist "%SCRIPTDIR%eram.inf" (
     echo Installing via eram.inf ...
     pnputil /add-driver "%SCRIPTDIR%eram.inf" /install >nul 2>&1
+    if !ERRORLEVEL! equ 0 (
+        echo ERAM driver installed via INF successfully.
+        goto PostInstall
+    )
+    echo INFO: pnputil /add-driver returned !ERRORLEVEL!, trying Windows 7 syntax...
+    :: Windows 7 pnputil uses -i -a instead of /add-driver ... /install
+    pnputil -i -a "%SCRIPTDIR%eram.inf" >nul 2>&1
     if !ERRORLEVEL! equ 0 (
         echo ERAM driver installed via INF successfully.
         goto PostInstall
@@ -150,11 +171,23 @@ echo.
 echo The RAM Disk will be available as drive R: after reboot (default size: 4 GB).
 echo You can change settings using the ERAM Control Panel applet (eram.cpl).
 echo.
-echo NOTE: On 64-bit Windows, Driver Signature Enforcement must be disabled for
-echo unsigned drivers. You can do this by running the following command and
-echo then rebooting:
-echo   bcdedit /set testsigning on
-echo.
+
+:: On 64-bit Windows, unsigned drivers require test-signing mode.
+:: Enable it automatically so the driver loads after reboot.
+if "%ARCH%"=="x64" (
+    echo Enabling test signing mode for unsigned driver support on 64-bit Windows...
+    bcdedit /set testsigning on >nul 2>&1
+    if !ERRORLEVEL! equ 0 (
+        echo Test signing mode enabled successfully.
+    ) else (
+        echo WARNING: Could not enable test signing automatically.
+        echo Please run the following command in an elevated Command Prompt,
+        echo then reboot before the driver will load:
+        echo   bcdedit /set testsigning on
+    )
+    echo.
+)
+
 echo A system reboot is required to complete the installation.
 set /p REBOOT=Would you like to reboot now? (Y/N): 
 if /i "%REBOOT%"=="Y" (
