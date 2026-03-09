@@ -104,7 +104,6 @@
       <PrecompiledHeaderOutputFile>.\Release\eram.pch</PrecompiledHeaderOutputFile>
       <ObjectFileName>Release\x86\temp\</ObjectFileName>
       <ProgramDataBaseFileName>Release\x86\temp\</ProgramDataBaseFileName>
-      <StructMemberAlignment>1Byte</StructMemberAlignment>
     </ClCompile>
     <Midl>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -146,7 +145,6 @@
       <PrecompiledHeaderOutputFile>.\Release\eram.pch</PrecompiledHeaderOutputFile>
       <ObjectFileName>Release\x64\temp\</ObjectFileName>
       <ProgramDataBaseFileName>Release\x64\temp\</ProgramDataBaseFileName>
-      <StructMemberAlignment>1Byte</StructMemberAlignment>
     </ClCompile>
     <Midl>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -188,7 +186,6 @@
       <PrecompiledHeaderOutputFile>.\Debug\eram.pch</PrecompiledHeaderOutputFile>
       <ObjectFileName>Debug\x86\temp\</ObjectFileName>
       <ProgramDataBaseFileName>Debug\x86\temp\</ProgramDataBaseFileName>
-      <StructMemberAlignment>1Byte</StructMemberAlignment>
     </ClCompile>
     <Midl>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -232,7 +229,6 @@
       <PrecompiledHeaderOutputFile>.\Debug\eram.pch</PrecompiledHeaderOutputFile>
       <ObjectFileName>Debug\x64\temp\</ObjectFileName>
       <ProgramDataBaseFileName>Debug\x64\temp\</ProgramDataBaseFileName>
-      <StructMemberAlignment>1Byte</StructMemberAlignment>
     </ClCompile>
     <Midl>
       <SuppressStartupBanner>true</SuppressStartupBanner>
