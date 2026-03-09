@@ -556,7 +556,7 @@ BOOLEAN OsAlloc(
 
 VOID CalcAvailSize(
 	IN PDRIVER_OBJECT	pDrvObj,
-	IN POOL_FLAGS		fFlags,
+	IN POOL_TYPE		fPoolType,
 	IN SIZE_T			uMemSize
  );
 
