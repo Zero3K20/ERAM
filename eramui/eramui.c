@@ -774,7 +774,6 @@ BOOL WINAPI GetPageOption(HWND hDlg, LPERAMREGOPT lpEramOpt)
 	CHAR szId[3], szRoot[4], szMsg[128], szVolLabel[16], szText[128];
 	PSTR pEnd;
 	ULONGLONG ulPageT;
-	OSVERSIONINFO Ver;
 	/* Get the number of root directories */
 	lpEramOpt->wRootDir = (WORD)GetDlgItemInt(hDlg, IDC_EDIT_ROOTDIR, NULL, FALSE);
 	/* Get the option(s) */
@@ -803,13 +802,8 @@ BOOL WINAPI GetPageOption(HWND hDlg, LPERAMREGOPT lpEramOpt)
 	{
 		lpEramOpt->uOption.Bits.MakeTempDir = 1;
 	}
-	Ver.dwOSVersionInfoSize = sizeof(Ver);
-	if ((GetVersionEx(&Ver) != FALSE)&&
-		(Ver.dwPlatformId == VER_PLATFORM_WIN32_NT)&&
-		(Ver.dwMajorVersion >= 5))		/* Win2000+ */
-	{
-		lpEramOpt->uOption.Bits.EnableFat32 = 1;
-	}
+	/* Always running on Windows 2000 or later (driver requires NT) */
+	lpEramOpt->uOption.Bits.EnableFat32 = 1;
 	/* Get the allocation unit */
 	lpEramOpt->byAllocUnit = (BYTE)GetDlgItemInt(hDlg, IDC_COMBO_ALLOCUNIT, NULL, FALSE);
 	/* Get the media ID */
@@ -1028,18 +1022,7 @@ LONG CALLBACK CPlApplet(HWND hwndCPL, UINT uMsg, LPARAM lParam1, LPARAM lParam2)
 
 LONG WINAPI CplInit(VOID)
 {
-	/* Local variable(s) */
-	OSVERSIONINFO Ver;
-	Ver.dwOSVersionInfoSize = sizeof(Ver);
-	if (GetVersionEx(&Ver) == FALSE)
-	{
-		return FALSE;
-	}
-	/* Don't load if not NT */
-	if (Ver.dwPlatformId != VER_PLATFORM_WIN32_NT)
-	{
-		return FALSE;
-	}
+	/* Always running on Windows NT (driver requires NT kernel) */
 	return TRUE;
 }
 
@@ -1233,19 +1216,11 @@ VOID CALLBACK EramUninstall(HWND hWnd, HINSTANCE hInstance, LPSTR lpszCmdLine, I
 	SC_HANDLE hScm, hEram;
 	CHAR szMsg[256], szSysDir[MAX_PATH], szFile[MAX_PATH], szText[128];
 	DWORD dwError;
-	OSVERSIONINFO Ver;
 	if (MessageBox(hWnd, GetResStr(IDS_PROMPT_ERAM_REMOVE, szText, sizeof(szText)), szWinName, MB_OKCANCEL) != IDOK)
 	{
 		return;
 	}
-	Ver.dwOSVersionInfoSize = sizeof(Ver);
-	if ((GetVersionEx(&Ver) == FALSE)||
-		(Ver.dwPlatformId != VER_PLATFORM_WIN32_NT))	/* Not NT */
-	{
-		MessageBox(hWnd, GetResStr(IDS_ERR_DETECT_OS, szText, sizeof(szText)), szWinName, MB_OK);
-		return;
-	}
-	if (Ver.dwMajorVersion >= 5)		/* Windows2000 */
+	/* Always running on Windows 2000 or later (driver requires NT kernel) */
 	{
 		/* Delete from device manager? */
 		if (Eram2000UnInstall(hWnd) == FALSE)
@@ -1499,7 +1474,7 @@ BOOL WINAPI DeleteInfFiles(LPCSTR lpszInf)
 		return FALSE;
 	}
 	/* Extract filename extension */
-	_splitpath(lpszInf, NULL, NULL, szBase, szExt);
+	_splitpath_s(lpszInf, NULL, 0, NULL, 0, szBase, _MAX_FNAME, szExt, _MAX_EXT);
 	if (lstrcmpi(szExt, ".INF") != 0)
 	{
 		return FALSE;
