@@ -2034,6 +2034,11 @@ VOID EramSetCleanShutdown(
 		from a disk formatted by an older ERAM build that omitted this signature,
 		which causes Windows' FAT filesystem driver (fastfat.sys) to return
 		STATUS_UNRECOGNIZED_VOLUME and refuse to mount the restored volume.
+
+		Also repairs the MBR partition table entry at bytes 446-461.  Without a
+		valid partition entry, Windows Disk Management prompts "Initialize Disk"
+		when the image is attached as a VHD.  The entry is only written if
+		dwNumSectors is zero (absent), so a previously correct entry is preserved.
 	Parameters
 		pEramExt	The pointer to an ERAM_EXTENTION structure.
 	Return Value
@@ -2044,6 +2049,8 @@ VOID EramRepairBootSector(
 	IN PERAM_EXTENSION	pEramExt
  )
 {
+	PBYTE pPart0;
+	ULONG dwNumSectors;
 	KdPrint(("EramRepairBootSector start\n"));
 	if (pEramExt->pPageBase == NULL)
 	{
@@ -2056,6 +2063,29 @@ VOID EramRepairBootSector(
 		pEramExt->pPageBase[510] = 0x55;
 		pEramExt->pPageBase[511] = 0xAA;
 		KdPrint(("EramRepairBootSector: boot signature written\n"));
+	}
+	/* Repair the MBR partition table entry (bytes 446-461).
+	   ERAM uses a superfloppy layout so the single partition covers the
+	   entire disk starting at LBA 0.  Only write the entry if it is absent
+	   (dwNumSectors == 0), which is the case for backups made by older
+	   ERAM builds that did not write a partition table. */
+	pPart0 = pEramExt->pPageBase + 446;
+	RtlCopyBytes(&dwNumSectors, pPart0 + 12, sizeof(ULONG));
+	if (dwNumSectors == 0 && pEramExt->uAllSector != 0)
+	{
+		pPart0[0] = 0x80;		/* active/bootable */
+		pPart0[1] = 0x00;		/* first CHS: head 0 */
+		pPart0[2] = 0x01;		/* first CHS: sector 1 */
+		pPart0[3] = 0x00;		/* first CHS: cylinder 0 */
+		/* Partition type: 0x0C = FAT32 LBA; fall back to FAT_size for FAT12/16 */
+		pPart0[4] = (pEramExt->FAT_size == PARTITION_FAT32) ? 0x0C : pEramExt->FAT_size;
+		pPart0[5] = 0xFE;		/* last CHS: use max (LBA mode) */
+		pPart0[6] = 0xFF;
+		pPart0[7] = 0xFF;
+		/* pPart0[8..11]: dwStartSector = 0 (already zero — no hidden sectors) */
+		RtlCopyBytes(pPart0 + 12, &pEramExt->uAllSector, sizeof(ULONG));
+		KdPrint(("EramRepairBootSector: MBR partition entry written (%lu sectors)\n",
+		         pEramExt->uAllSector));
 	}
 	KdPrint(("EramRepairBootSector end\n"));
 }
@@ -3958,6 +3988,22 @@ BOOLEAN EramMakeFAT(
 		/* End-of-sector marker required by Windows' FAT driver to recognise the volume */
 		pBootFat16->bsSig2[0] = 0x55;
 		pBootFat16->bsSig2[1] = 0xaa;
+		/* Write MBR partition table entry into the reserved area of the FAT12/16
+		   boot sector (bytes 446-461 fall inside byResv2[126] for FAT16).
+		   This lets the image be mounted as a VHD without "Initialize Disk". */
+		{
+			PBYTE pPart0 = (PBYTE)pBootFat16 + 446;
+			pPart0[0] = 0x80;					/* active/bootable */
+			pPart0[1] = 0x00;					/* first CHS: head 0 */
+			pPart0[2] = 0x01;					/* first CHS: sector 1 */
+			pPart0[3] = 0x00;					/* first CHS: cylinder 0 */
+			pPart0[4] = pEramExt->FAT_size;		/* partition type from FAT_size */
+			pPart0[5] = 0xFE;					/* last CHS: use max (LBA mode) */
+			pPart0[6] = 0xFF;
+			pPart0[7] = 0xFF;
+			/* dwStartSector = 0: partition begins at LBA 0 */
+			RtlCopyBytes(pPart0 + 12, &pEramExt->uAllSector, sizeof(ULONG));
+		}
 	}
 	else										/* FAT32 */
 	{
@@ -3972,6 +4018,20 @@ BOOLEAN EramMakeFAT(
 		/* End-of-sector marker required by Windows' FAT driver to recognise the volume */
 		pBootFat32->bsSig2[0] = 0x55;
 		pBootFat32->bsSig2[1] = 0xaa;
+		/* Write MBR partition table entry.
+		   ERAM uses a superfloppy layout (FAT boot sector at LBA 0, bsHiddenSecs=0).
+		   Without a partition entry, Windows Disk Management prompts to "Initialize Disk"
+		   when the image is attached as a VHD.  Partition type 0x0C = FAT32 LBA. */
+		pBootFat32->Parts[0].byBootInd     = 0x80;		/* active/bootable */
+		pBootFat32->Parts[0].byFirstHead   = 0x00;		/* first CHS: head 0 */
+		pBootFat32->Parts[0].byFirstSector = 0x01;		/* first CHS: sector 1 */
+		pBootFat32->Parts[0].byFirstTrack  = 0x00;		/* first CHS: cylinder 0 */
+		pBootFat32->Parts[0].byFileSystem  = 0x0C;		/* FAT32 with LBA (INT 13h ext) */
+		pBootFat32->Parts[0].byLastHead    = 0xFE;		/* last CHS: use max (LBA mode) */
+		pBootFat32->Parts[0].byLastSector  = 0xFF;
+		pBootFat32->Parts[0].byLastTrack   = 0xFF;
+		pBootFat32->Parts[0].dwStartSector = 0;		/* partition starts at LBA 0 */
+		pBootFat32->Parts[0].dwNumSectors  = pEramExt->uAllSector;
 		/* Write the FSINFO sector */
 		pFsInfoSector = (PFSINFO_SECTOR)((PBYTE)pBootFat32 + pBootFat32->BPB_fat32.wFsInfoSector * SECTOR);
 		pFsInfoSector->FSInfo_Sig = 0x41615252;				/* RRaA */
