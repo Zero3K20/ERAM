@@ -485,6 +485,14 @@ VOID EramSetCleanShutdown(
 	IN PFAT_ID			pFatId
  );
 
+VOID EramRepairBootSector(
+	IN PERAM_EXTENSION	pEramExt
+ );
+
+VOID EramRepairDirEntries(
+	IN PERAM_EXTENSION	pEramExt
+ );
+
 VOID EramBackupThread(
 	IN PVOID			pContext
  );
@@ -527,6 +535,8 @@ VOID EramBackupThread(
 #pragma	alloc_text(PAGE, EramBackupDisk)
 #pragma	alloc_text(PAGE, EramRestoreDisk)
 #pragma	alloc_text(PAGE, EramSetCleanShutdown)
+#pragma	alloc_text(PAGE, EramRepairBootSector)
+#pragma	alloc_text(PAGE, EramRepairDirEntries)
 #pragma	alloc_text(PAGE, EramBackupThread)
 #endif	// ALLOC_PRAGMA
 

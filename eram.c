@@ -1845,6 +1845,219 @@ VOID EramSetCleanShutdown(
 }
 
 
+/* EramRepairBootSector
+		Ensures the boot sector of a restored disk image carries the mandatory
+		0x55,0xAA end-of-sector signature.  The backup may have been captured
+		from a disk formatted by an older ERAM build that omitted this signature,
+		which causes Windows' FAT filesystem driver (fastfat.sys) to return
+		STATUS_UNRECOGNIZED_VOLUME and refuse to mount the restored volume.
+	Parameters
+		pEramExt	The pointer to an ERAM_EXTENTION structure.
+	Return Value
+		No return value.
+*/
+
+VOID EramRepairBootSector(
+	IN PERAM_EXTENSION	pEramExt
+ )
+{
+	KdPrint(("EramRepairBootSector start\n"));
+	if (pEramExt->pPageBase == NULL)
+	{
+		KdPrint(("EramRepairBootSector: pPageBase is NULL, skipping\n"));
+		return;
+	}
+	/* Bytes 510-511 of the boot sector must be 0x55, 0xAA */
+	if (pEramExt->pPageBase[510] != 0x55 || pEramExt->pPageBase[511] != 0xAA)
+	{
+		pEramExt->pPageBase[510] = 0x55;
+		pEramExt->pPageBase[511] = 0xAA;
+		KdPrint(("EramRepairBootSector: boot signature written\n"));
+	}
+	KdPrint(("EramRepairBootSector end\n"));
+}
+
+
+/* EramReadFat32Entry / EramFreeFat32Chain / EramScanDirFAT32
+		Static helper routines used by EramRepairDirEntries.
+*/
+
+static DWORD EramReadFat32Entry(
+	IN PDWORD	pFat32,
+	IN DWORD	cluster
+ )
+{
+	return pFat32[cluster] & 0x0FFFFFFF;
+}
+
+static VOID EramFreeFat32Chain(
+	IN PDWORD	pFat32,
+	IN DWORD	startCluster,
+	IN DWORD	maxClusters
+ )
+{
+	DWORD cluster = startCluster;
+	DWORD count = 0;
+	while (cluster >= 2 && cluster < 0x0FFFFFF8 && count < maxClusters)
+	{
+		DWORD next = EramReadFat32Entry(pFat32, cluster);
+		pFat32[cluster] = 0;
+		cluster = next;
+		count++;
+	}
+}
+
+static VOID EramScanDirFAT32(
+	IN PBYTE	pDisk,
+	IN PDWORD	pFat32,
+	IN DWORD	firstDataSector,
+	IN DWORD	sectorsPerCluster,
+	IN DWORD	bytesPerSector,
+	IN DWORD	startCluster,
+	IN DWORD	maxClusters,
+	IN ULONG	depth
+ )
+{
+	DWORD cluster, bytesPerCluster, clusterCount;
+	DWORD j, fileSize, firstCluster;
+	PBYTE pCluster, pEntry;
+	BYTE attr;
+	if (depth >= 64)
+	{
+		return;
+	}
+	bytesPerCluster = bytesPerSector * sectorsPerCluster;
+	cluster = startCluster;
+	clusterCount = 0;
+	while (cluster >= 2 && cluster < 0x0FFFFFF8 && clusterCount < 65536)
+	{
+		pCluster = pDisk + (firstDataSector + (cluster - 2) * sectorsPerCluster) * bytesPerSector;
+		for (j = 0; j < bytesPerCluster; j += 32)
+		{
+			pEntry = pCluster + j;
+			if (pEntry[0] == 0x00)
+			{
+				return;				/* end of directory */
+			}
+			if (pEntry[0] == 0xE5)
+			{
+				continue;			/* deleted entry */
+			}
+			attr = pEntry[11];
+			if (attr == 0x0F)
+			{
+				continue;			/* long filename entry */
+			}
+			if (pEntry[0] == 0x2E)
+			{
+				continue;			/* "." or ".." */
+			}
+			fileSize    = *(PDWORD)(pEntry + 28);
+			firstCluster = ((DWORD)(*(PWORD)(pEntry + 20)) << 16) | *(PWORD)(pEntry + 26);
+			if ((attr & 0x10) == 0)
+			{
+				/* Regular file: fix size=0 entries that still reference a FAT chain.
+				   This state arises when the backup captures a file mid-write: the
+				   cluster chain was allocated in the FAT but the directory entry size
+				   had not yet been flushed back by the filesystem driver.  Freeing the
+				   chain and clearing the cluster field makes the entry self-consistent
+				   so chkdsk does not report it as invalid. */
+				if (fileSize == 0 && firstCluster >= 2 && firstCluster < 0x0FFFFFF8)
+				{
+					KdPrint(("EramRepairDirEntries: fixing entry with size=0 cluster=%u\n", firstCluster));
+					EramFreeFat32Chain(pFat32, firstCluster, maxClusters);
+					*(PWORD)(pEntry + 26) = 0;	/* cluster low  */
+					*(PWORD)(pEntry + 20) = 0;	/* cluster high */
+				}
+			}
+			else
+			{
+				/* Directory: recurse */
+				if (firstCluster >= 2 && firstCluster < 0x0FFFFFF8)
+				{
+					EramScanDirFAT32(pDisk, pFat32, firstDataSector, sectorsPerCluster,
+						bytesPerSector, firstCluster, maxClusters, depth + 1);
+				}
+			}
+		}
+		cluster = EramReadFat32Entry(pFat32, cluster);
+		clusterCount++;
+	}
+}
+
+
+/* EramRepairDirEntries
+		After restoring a backup, scans the FAT32 directory tree for file
+		entries that have size=0 but a non-zero first-cluster reference.
+		This inconsistency occurs when the backup is taken while files are
+		being written: the FAT cluster chain is allocated first, but the
+		directory entry size field is only written once the operation
+		completes.  If the backup is captured between those two steps the
+		restored image has orphaned clusters and chkdsk reports the entries
+		as invalid, preventing Windows from mounting the volume cleanly.
+		The fix frees the orphaned cluster chain and clears the cluster
+		reference so the entry is self-consistent (an empty file).
+	Parameters
+		pEramExt	The pointer to an ERAM_EXTENTION structure.
+	Return Value
+		No return value.
+*/
+
+VOID EramRepairDirEntries(
+	IN PERAM_EXTENSION	pEramExt
+ )
+{
+	PBOOTSECTOR_FAT32 pBoot;
+	DWORD bytesPerSector, sectorsPerCluster, reservedSectors;
+	DWORD numFats, fatSize32, rootCluster;
+	DWORD totalSectors, firstDataSector, dataSectors, totalClusters;
+	PDWORD pFat32;
+	KdPrint(("EramRepairDirEntries start\n"));
+	if (pEramExt->pPageBase == NULL)
+	{
+		KdPrint(("EramRepairDirEntries: pPageBase is NULL, skipping\n"));
+		return;
+	}
+	if (pEramExt->FAT_size != PARTITION_FAT32)
+	{
+		KdPrint(("EramRepairDirEntries: not FAT32, skipping\n"));
+		return;
+	}
+	/* Read the filesystem layout directly from the restored boot sector so
+	   that we use the exact parameters that Windows will use at mount time. */
+	pBoot            = (PBOOTSECTOR_FAT32)pEramExt->pPageBase;
+	bytesPerSector   = pBoot->BPB.wNumSectorByte;
+	sectorsPerCluster= pBoot->BPB.byAllocUnit;
+	reservedSectors  = pBoot->BPB.wNumResvSector;
+	numFats          = pBoot->BPB.byNumFat;
+	fatSize32        = pBoot->BPB_fat32.dwNumFatSector32;
+	rootCluster      = pBoot->BPB_fat32.dwRootCluster;
+	totalSectors     = (pBoot->BPB.wNumAllSector != 0) ?
+	                       pBoot->BPB.wNumAllSector :
+	                       pBoot->BPB_ext.bsHugeSectors;
+	if (bytesPerSector == 0 || sectorsPerCluster == 0 ||
+		fatSize32 == 0 || rootCluster < 2)
+	{
+		KdPrint(("EramRepairDirEntries: invalid BPB, skipping\n"));
+		return;
+	}
+	firstDataSector = reservedSectors + numFats * fatSize32;
+	if (totalSectors <= firstDataSector)
+	{
+		KdPrint(("EramRepairDirEntries: invalid sector counts, skipping\n"));
+		return;
+	}
+	dataSectors   = totalSectors - firstDataSector;
+	totalClusters = dataSectors / sectorsPerCluster;
+	pFat32 = (PDWORD)(pEramExt->pPageBase + reservedSectors * bytesPerSector);
+	/* Scan the directory tree and fix any inconsistent entries */
+	EramScanDirFAT32(pEramExt->pPageBase, pFat32,
+		firstDataSector, sectorsPerCluster, bytesPerSector,
+		rootCluster, totalClusters, 0);
+	KdPrint(("EramRepairDirEntries end\n"));
+}
+
+
 /* EramBackupThread
 		Daily backup thread.  Wakes up at the configured time of day and
 		saves the RAM disk to the backup file.
@@ -2126,6 +2339,15 @@ NTSTATUS EramInitDisk(
 		   reporting corruption.  The backup may have been captured before the
 		   filesystem driver cleared the bit during the previous shutdown. */
 		EramSetCleanShutdown(pEramExt, pFatId);
+		/* Ensure the boot sector carries the 0x55,0xAA end-of-sector signature
+		   required by Windows' FAT driver.  Backups from older ERAM builds may
+		   lack it because EramMakeFAT did not write it at format time. */
+		EramRepairBootSector(pEramExt);
+		/* Fix any file directory entries that have size=0 but a non-zero FAT
+		   cluster reference — a state captured when the backup was taken while
+		   a file write was in progress.  Without this repair chkdsk reports
+		   the entries as invalid and Windows refuses to mount the volume. */
+		EramRepairDirEntries(pEramExt);
 	}
 	else
 	{
@@ -3516,6 +3738,16 @@ BOOLEAN EramMakeFAT(
 	{
 		/* Write the boot sector (FAT12, 16) */
 		RtlCopyBytes(&(pBootFat16->BPB_ext2), &(pFatId->BPB_ext2), sizeof(pBootFat16->BPB_ext2));
+		/* Extended boot record signature: marks Volume ID, label, and FS type as valid */
+		pBootFat16->BPB_ext2.bsBootSignature = 0x29;
+		/* Filesystem type string */
+		if (pEramExt->FAT_size == PARTITION_FAT_12)
+			RtlCopyBytes(pBootFat16->BPB_ext2.bsFileSystemType, "FAT12   ", 8);
+		else
+			RtlCopyBytes(pBootFat16->BPB_ext2.bsFileSystemType, "FAT16   ", 8);
+		/* End-of-sector marker required by Windows' FAT driver to recognise the volume */
+		pBootFat16->bsSig2[0] = 0x55;
+		pBootFat16->bsSig2[1] = 0xaa;
 	}
 	else										/* FAT32 */
 	{
@@ -3523,6 +3755,13 @@ BOOLEAN EramMakeFAT(
 		pBootFat32 = (PBOOTSECTOR_FAT32)pDisk;
 		RtlCopyBytes(&(pBootFat32->BPB_fat32), &(pFatId->BPB_fat32), sizeof(pBootFat32->BPB_fat32));
 		RtlCopyBytes(&(pBootFat32->BPB_ext2), &(pFatId->BPB_ext2), sizeof(pBootFat32->BPB_ext2));
+		/* Extended boot record signature: marks Volume ID, label, and FS type as valid */
+		pBootFat32->BPB_ext2.bsBootSignature = 0x29;
+		/* Filesystem type string */
+		RtlCopyBytes(pBootFat32->BPB_ext2.bsFileSystemType, "FAT32   ", 8);
+		/* End-of-sector marker required by Windows' FAT driver to recognise the volume */
+		pBootFat32->bsSig2[0] = 0x55;
+		pBootFat32->bsSig2[1] = 0xaa;
 		/* Write the FSINFO sector */
 		pFsInfoSector = (PFSINFO_SECTOR)((PBYTE)pBootFat32 + pBootFat32->BPB_fat32.wFsInfoSector * SECTOR);
 		pFsInfoSector->FSInfo_Sig = 0x41615252;				/* RRaA */
