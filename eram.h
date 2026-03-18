@@ -480,6 +480,11 @@ BOOLEAN EramRestoreDisk(
 	IN PERAM_EXTENSION	pEramExt
  );
 
+VOID EramSetCleanShutdown(
+	IN PERAM_EXTENSION	pEramExt,
+	IN PFAT_ID			pFatId
+ );
+
 VOID EramBackupThread(
 	IN PVOID			pContext
  );
@@ -521,6 +526,7 @@ VOID EramBackupThread(
 #pragma	alloc_text(PAGE, EramShutdown)
 #pragma	alloc_text(PAGE, EramBackupDisk)
 #pragma	alloc_text(PAGE, EramRestoreDisk)
+#pragma	alloc_text(PAGE, EramSetCleanShutdown)
 #pragma	alloc_text(PAGE, EramBackupThread)
 #endif	// ALLOC_PRAGMA
 
