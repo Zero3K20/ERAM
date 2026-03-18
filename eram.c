@@ -1594,6 +1594,159 @@ NTSTATUS EramShutdown(
 }
 
 
+/* VhdSwap32
+		Reverse the byte order of a 32-bit value for big-endian storage.
+*/
+static ULONG VhdSwap32(ULONG x)
+{
+	return ((x & 0xFFUL) << 24)
+		 | ((x & 0xFF00UL) << 8)
+		 | ((x & 0xFF0000UL) >> 8)
+		 | ((x >> 24) & 0xFFUL);
+}
+
+/* VhdSwap64
+		Reverse the byte order of a 64-bit value for big-endian storage.
+*/
+static ULONGLONG VhdSwap64(ULONGLONG x)
+{
+	return ((ULONGLONG)VhdSwap32((ULONG)(x & 0xFFFFFFFFULL)) << 32)
+		 | (ULONGLONG)VhdSwap32((ULONG)(x >> 32));
+}
+
+/* VhdComputeGeometry
+		Compute the 4-byte packed CHS geometry field (big-endian) for a VHD
+		of the given byte size using the Microsoft-specified algorithm.
+*/
+static ULONG VhdComputeGeometry(ULONGLONG diskSize)
+{
+	ULONG totalSectors, spt, heads, cylTimesHeads, cyls;
+	/* Convert bytes to 512-byte sectors; cap to avoid overflow */
+	if (diskSize / 512 > 0xFFFFFFFFULL)
+		totalSectors = 0xFFFFFFFFUL;
+	else
+		totalSectors = (ULONG)(diskSize / 512);
+	if (totalSectors > 65535UL * 16UL * 255UL)
+		totalSectors = 65535UL * 16UL * 255UL;
+	if (totalSectors >= 65535UL * 16UL * 63UL) {
+		spt = 255;
+		heads = 16;
+		cylTimesHeads = totalSectors / spt;
+	} else {
+		spt = 17;
+		cylTimesHeads = totalSectors / spt;
+		heads = (cylTimesHeads + 1023) / 1024;
+		if (heads < 4)
+			heads = 4;
+		if (cylTimesHeads >= (ULONG)heads * 1024 || heads > 16) {
+			spt = 31;
+			heads = 16;
+			cylTimesHeads = totalSectors / spt;
+		}
+		if (cylTimesHeads >= (ULONG)heads * 1024) {
+			spt = 63;
+			heads = 16;
+			cylTimesHeads = totalSectors / spt;
+		}
+	}
+	cyls = cylTimesHeads / heads;
+	if (cyls > 65535)
+		cyls = 65535;
+	/* Return big-endian: cylinders (16-bit) | heads (8-bit) | spt (8-bit) */
+	return VhdSwap32(((ULONG)(cyls & 0xFFFF) << 16)
+		           | ((ULONG)(heads & 0xFF)   << 8)
+		           |  (ULONG)(spt   & 0xFF));
+}
+
+/* VhdBuildFooter
+		Fill the 512-byte buffer pointed to by pFooter with the VHD fixed-disk
+		footer for a disk of diskSize bytes.  The footer must be written at the
+		end of the file, immediately after the raw disk data.
+*/
+static VOID VhdBuildFooter(PBYTE pFooter, ULONGLONG diskSize)
+{
+	LARGE_INTEGER	systemTime;
+	LONGLONG		vhdTimestamp;
+	ULONG			checksum;
+	ULONG			i;
+	ULONGLONG		swapped64;
+	ULONG			swapped32;
+
+	/* Zero the entire footer first */
+	RtlZeroBytes(pFooter, VHD_FOOTER_SIZE);
+
+	/* Cookie: "conectix" */
+	pFooter[0]='c'; pFooter[1]='o'; pFooter[2]='n'; pFooter[3]='e';
+	pFooter[4]='c'; pFooter[5]='t'; pFooter[6]='i'; pFooter[7]='x';
+
+	/* Features: 0x00000002 (big-endian) */
+	pFooter[8]=0x00; pFooter[9]=0x00; pFooter[10]=0x00; pFooter[11]=0x02;
+
+	/* File Format Version: 0x00010000 (big-endian) */
+	pFooter[12]=0x00; pFooter[13]=0x01; pFooter[14]=0x00; pFooter[15]=0x00;
+
+	/* Data Offset: 0xFFFFFFFFFFFFFFFF (fixed disk, big-endian) */
+	pFooter[16]=0xFF; pFooter[17]=0xFF; pFooter[18]=0xFF; pFooter[19]=0xFF;
+	pFooter[20]=0xFF; pFooter[21]=0xFF; pFooter[22]=0xFF; pFooter[23]=0xFF;
+
+	/* Time Stamp: seconds since 2000-01-01 00:00:00 UTC (big-endian)
+	   Windows FILETIME epoch is 1601-01-01; subtract the offset defined in
+	   VHD_EPOCH_FILETIME_OFFSET to convert to seconds from the VHD epoch. */
+	KeQuerySystemTime(&systemTime);
+	vhdTimestamp = (systemTime.QuadPart - VHD_EPOCH_FILETIME_OFFSET) / 10000000LL;
+	if (vhdTimestamp < 0)         vhdTimestamp = 0;
+	if (vhdTimestamp > 0xFFFFFFFFLL) vhdTimestamp = 0xFFFFFFFFLL;
+	swapped32 = VhdSwap32((ULONG)vhdTimestamp);
+	RtlCopyBytes(pFooter + 24, &swapped32, 4);
+
+	/* Creator Application: "win " */
+	pFooter[28]='w'; pFooter[29]='i'; pFooter[30]='n'; pFooter[31]=' ';
+
+	/* Creator Version: 0x000A0000 (big-endian) */
+	pFooter[32]=0x00; pFooter[33]=0x0A; pFooter[34]=0x00; pFooter[35]=0x00;
+
+	/* Creator Host OS: "Wi2k" */
+	pFooter[36]='W'; pFooter[37]='i'; pFooter[38]='2'; pFooter[39]='k';
+
+	/* Original Size (big-endian) */
+	swapped64 = VhdSwap64(diskSize);
+	RtlCopyBytes(pFooter + 40, &swapped64, 8);
+
+	/* Current Size (big-endian) */
+	RtlCopyBytes(pFooter + 48, &swapped64, 8);
+
+	/* Disk Geometry (packed CHS, big-endian) */
+	swapped32 = VhdComputeGeometry(diskSize);
+	RtlCopyBytes(pFooter + 56, &swapped32, 4);
+
+	/* Disk Type: 2 = fixed (big-endian) */
+	pFooter[60]=0x00; pFooter[61]=0x00; pFooter[62]=0x00; pFooter[63]=0x02;
+
+	/* Checksum at offset 64 is zero for now; UniqueId derived from disk size */
+	pFooter[68] = (BYTE)(diskSize >> 56);
+	pFooter[69] = (BYTE)(diskSize >> 48);
+	pFooter[70] = (BYTE)(diskSize >> 40);
+	pFooter[71] = (BYTE)(diskSize >> 32);
+	pFooter[72] = (BYTE)(diskSize >> 24);
+	pFooter[73] = (BYTE)(diskSize >> 16);
+	pFooter[74] = (BYTE)(diskSize >>  8);
+	pFooter[75] = (BYTE)(diskSize);
+	/* Remaining 8 bytes of UniqueId: "ERAM" + 4 zeros (already zero) */
+	pFooter[76]='E'; pFooter[77]='R'; pFooter[78]='A'; pFooter[79]='M';
+
+	/* Saved State: 0 (already zero); Reserved: zeros (already zero) */
+
+	/* Compute checksum: one's complement of the 32-bit sum of all footer bytes
+	   with the checksum field treated as zero (it already is zero). */
+	checksum = 0;
+	for (i = 0; i < VHD_FOOTER_SIZE; i++)
+		checksum += pFooter[i];
+	checksum = ~checksum;
+	swapped32 = VhdSwap32(checksum);
+	RtlCopyBytes(pFooter + 64, &swapped32, 4);
+}
+
+
 /* EramBackupDisk
 		Write the RAM disk contents to the backup file.
 	Parameters
@@ -1603,6 +1756,9 @@ NTSTATUS EramShutdown(
 	Notes
 		Only backs up OS-managed memory (paged/non-paged pool).
 		External (OS-unmanaged) memory backup is not supported.
+		The backup is written in VHD fixed-disk format: raw disk data followed
+		by a 512-byte VHD footer.  The resulting file can be mounted directly
+		as a .vhd in Windows Disk Management or Hyper-V.
 */
 
 VOID EramBackupDisk(
@@ -1683,6 +1839,19 @@ VOID EramBackupDisk(
 		ByteOffset.QuadPart += uChunkSize;
 		uRemain -= uChunkSize;
 	}
+	if (ntStat == STATUS_SUCCESS)
+	{
+		/* Append the 512-byte VHD fixed-disk footer so the file can be mounted
+		   directly as a .vhd by Windows Disk Management or Hyper-V. */
+		BYTE VhdFooter[VHD_FOOTER_SIZE];
+		VhdBuildFooter(VhdFooter, (ULONGLONG)uTotalSize);
+		ntStat = ZwWriteFile(hFile, NULL, NULL, NULL, &IoStat, VhdFooter, VHD_FOOTER_SIZE, &ByteOffset, NULL);
+		if (ntStat != STATUS_SUCCESS)
+		{
+			KdPrint(("EramBackupDisk: ZwWriteFile(VHD footer) failed 0x%x\n", ntStat));
+			EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "EramBackupDisk:VHD footer");
+		}
+	}
 	ZwClose(hFile);
 	KdPrint(("EramBackupDisk end\n"));
 }
@@ -1696,6 +1865,9 @@ VOID EramBackupDisk(
 		TRUE if restored successfully, FALSE otherwise (no file, size mismatch, I/O error).
 	Notes
 		Only restores to OS-managed memory (paged/non-paged pool).
+		Accepts both the legacy raw format (file size == disk size) and the
+		current VHD fixed-disk format (file size == disk size + VHD_FOOTER_SIZE).
+		Only the raw disk data is read; the VHD footer is ignored on restore.
 */
 
 BOOLEAN EramRestoreDisk(
@@ -1764,16 +1936,27 @@ BOOLEAN EramRestoreDisk(
 		ZwClose(hFile);
 		return FALSE;
 	}
-	/* Verify backup file size matches current disk size */
+	/* Accept both raw (legacy) and VHD fixed-disk formats.
+	   Raw:  file size == disk size         (no footer)
+	   VHD:  file size == disk size + 512   (VHD footer at end)
+	   In both cases we read exactly uTotalSize bytes starting at offset 0. */
 	uTotalSize = (SIZE_T)pEramExt->uSizeTotal << PAGE_SIZE_LOG2;
-	if ((SIZE_T)FileInfo.EndOfFile.QuadPart != uTotalSize)
+	if ((SIZE_T)FileInfo.EndOfFile.QuadPart == uTotalSize)
+	{
+		KdPrint(("EramRestoreDisk: raw format detected\n"));
+	}
+	else if ((SIZE_T)FileInfo.EndOfFile.QuadPart == uTotalSize + VHD_FOOTER_SIZE)
+	{
+		KdPrint(("EramRestoreDisk: VHD format detected, footer will be ignored\n"));
+	}
+	else
 	{
 		KdPrint(("EramRestoreDisk: size mismatch backup=%I64u disk=%lu\n", FileInfo.EndOfFile.QuadPart, (ULONG)uTotalSize));
 		EramReportEvent(pEramExt->pDevObj, ERAM_ERROR_FUNCTIONERROR, "EramRestoreDisk:size mismatch");
 		ZwClose(hFile);
 		return FALSE;
 	}
-	/* Read backup into RAM disk memory in chunks */
+	/* Read backup into RAM disk memory in chunks (only disk data, not VHD footer) */
 	pBuf = pEramExt->pPageBase;
 	ByteOffset.QuadPart = 0;
 	uRemain = uTotalSize;
@@ -3191,7 +3374,11 @@ VOID PrepareExtFileName(
 	Return Value
 		No return value.
 	Registry Parameter
-		BackupFile		Backup Image Filename.
+		BackupFile		Backup drive root or full path.
+						If set to a drive letter and optional backslash (e.g. "C:" or "C:\"),
+						the driver automatically appends "\ramdisk.vhd" so the backup is
+						saved as <drive>:\ramdisk.vhd.  A full path may also be given (e.g.
+						"C:\mybackup.vhd") and is used as-is.
 */
 
 VOID PrepareBackupFileName(
@@ -3202,6 +3389,7 @@ VOID PrepareBackupFileName(
 	/* local variables */
 	static WCHAR wszDef[] = L"";
 	static WCHAR wszBackupStub[] = L"\\??\\";
+	static const WCHAR wszVhdSuffix[] = L"\\ramdisk.vhd";
 	RTL_QUERY_REGISTRY_TABLE		ParamTable[2];
 	NTSTATUS		ntStat;
 	UNICODE_STRING	UniBackupFile;
@@ -3224,6 +3412,28 @@ VOID PrepareBackupFileName(
 	if (ntStat != STATUS_SUCCESS)	/* failed */
 	{
 		KdPrint(("Eram Warning:RtlQueryRegistryValues failed\n"));
+	}
+	/* If BackupFile is just a drive letter (e.g. "C:" or "C:\"), automatically
+	   append "\ramdisk.vhd" so the backup lands at the root of the chosen drive. */
+	if (UniBackupFile.Length >= 2 * sizeof(WCHAR) &&
+	    pEramExt->wszBackupFileMain[1] == L':')
+	{
+		/* Count significant characters (strip trailing backslashes) */
+		USHORT wchCount = UniBackupFile.Length / (USHORT)sizeof(WCHAR);
+		while (wchCount > 2 && pEramExt->wszBackupFileMain[wchCount - 1] == L'\\')
+			wchCount--;
+		if (wchCount == 2)		/* only "X:" — no filename component */
+		{
+			/* Append "\ramdisk.vhd" plus its null terminator.
+			   sizeof(wszVhdSuffix) covers the 13 wide chars: '\','r','a','m',
+			   'd','i','s','k','.','v','h','d','\0' = 26 bytes. */
+			ULONG suffixBytes = sizeof(wszVhdSuffix);
+			if ((ULONG)(2 * sizeof(WCHAR)) + suffixBytes <= (ULONG)UniBackupFile.MaximumLength)
+			{
+				RtlCopyBytes(pEramExt->wszBackupFileMain + 2,
+				             wszVhdSuffix, suffixBytes);
+			}
+		}
 	}
 	/* Copy the \\?\\ prefix into the prefix field */
 #pragma warning(disable : 4127)
