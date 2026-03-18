@@ -1799,6 +1799,52 @@ BOOLEAN EramRestoreDisk(
 }
 
 
+/* EramSetCleanShutdown
+		Mark the restored FAT volume as cleanly shut down.
+	Parameters
+		pEramExt	The pointer to an ERAM_EXTENTION structure.
+		pFatId		The pointer to FAT-ID structure (FAT_size and wNumResvSector must be set).
+	Return Value
+		No return value.
+	Notes
+		After restoring a backup, FAT[1] may still have the clean-shutdown bit
+		cleared (volume marked as "in use") because the backup was captured before
+		the filesystem driver set it back to clean during the previous shutdown.
+		Setting the clean-shutdown bit here lets Windows mount the restored volume
+		without reporting corruption or triggering an automatic consistency check.
+*/
+
+VOID EramSetCleanShutdown(
+	IN PERAM_EXTENSION	pEramExt,
+	IN PFAT_ID			pFatId
+ )
+{
+	/* local variables */
+	PBYTE pFatStart;
+	KdPrint(("EramSetCleanShutdown start\n"));
+	if (pEramExt->pPageBase == NULL)
+	{
+		return;
+	}
+	pFatStart = pEramExt->pPageBase + (ULONG)pFatId->BPB.wNumResvSector * SECTOR;
+	if (pEramExt->FAT_size == PARTITION_FAT32)
+	{
+		/* FAT32: bit 27 of FAT[1] is the clean-shutdown bit (1=clean, 0=dirty) */
+		((PDWORD)pFatStart)[1] |= 0x08000000;
+		KdPrint(("EramSetCleanShutdown: FAT32 clean-shutdown bit set\n"));
+	}
+	else if ((pEramExt->FAT_size == PARTITION_FAT_16)||
+			 (pEramExt->FAT_size == PARTITION_HUGE))
+	{
+		/* FAT16: bit 15 of FAT[1] is the clean-shutdown bit (1=clean, 0=dirty) */
+		((PWORD)pFatStart)[1] |= 0x8000;
+		KdPrint(("EramSetCleanShutdown: FAT16 clean-shutdown bit set\n"));
+	}
+	/* FAT12: no clean-shutdown bit defined in FAT[1] */
+	KdPrint(("EramSetCleanShutdown end\n"));
+}
+
+
 /* EramBackupThread
 		Daily backup thread.  Wakes up at the configured time of day and
 		saves the RAM disk to the backup file.
@@ -2076,6 +2122,10 @@ NTSTATUS EramInitDisk(
 		/* Backup restored — set up geometry and function pointers without formatting */
 		EramSetup(pEramExt, pFatId);
 		EramLocate(pEramExt);
+		/* Clear the FAT dirty bit so Windows mounts the restored volume without
+		   reporting corruption.  The backup may have been captured before the
+		   filesystem driver cleared the bit during the previous shutdown. */
+		EramSetCleanShutdown(pEramExt, pFatId);
 	}
 	else
 	{
