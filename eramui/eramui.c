@@ -62,6 +62,8 @@
 #include <regstr.h>
 #include <setupapi.h>
 #include <dbt.h>
+#include <commdlg.h>
+#include <winioctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "eramui.h"
@@ -75,6 +77,7 @@
 #define	MAXALLOCUNIT	(64)			/* allocation unit */
 #define	MAXINSTANCE		(9999)			/* The max instance(s) */
 #define	LIMIT_4GBPAGES	(0xfffff)		/* 4GB pages */
+#define BACKUP_BUFFER_SIZE	(4 * 1024 * 1024)	/* read/write chunk size for Backup Now */
 
 #define	EXPORT	__declspec(dllexport)
 
@@ -176,6 +179,8 @@ BOOL WINAPI GetInfName(HDEVINFO, PSP_DEVINFO_DATA, LPSTR, DWORD);
 BOOL WINAPI DeleteInfFiles(LPCSTR);
 LPCSTR WINAPI GetEramClass(GUID*);
 LPSTR WINAPI GetResStr(WORD, LPSTR, INT);
+VOID WINAPI BrowseBackupFile(HWND);
+VOID WINAPI BackupNow(HWND);
 
 
 /* StatusDlgProc
@@ -670,6 +675,12 @@ VOID WINAPI WmCommand(HWND hDlg, INT wId, HWND hWndCtl, UINT wNotifyCode)
 			bUpdate = TRUE;
 		}
 		Edit_Enable(GetDlgItem(hDlg, IDC_EDIT_EXTSTART_MB), (Button_GetCheck(hWndCtl) != 0) ? TRUE : FALSE);
+		break;
+	case IDC_BTN_BROWSE_BACKUP:
+		BrowseBackupFile(hDlg);
+		break;
+	case IDC_BTN_BACKUP_NOW:
+		BackupNow(hDlg);
 		break;
 	}
 }
@@ -1166,6 +1177,344 @@ VOID WINAPI WmDestroy(HWND hDlg)
 		hgKey = NULL;
 	}
 	FORWARD_WM_DESTROY(hDlg, DefWindowProc);
+}
+
+
+/* BrowseBackupFile
+		Open a Save As dialog so the user can select or name the VHD backup file.
+		The chosen path is written into the Backup File edit control.
+	Parameters
+		hDlg		The window handle of the dialog.
+	Return Value
+		None.
+*/
+
+VOID WINAPI BrowseBackupFile(HWND hDlg)
+{
+	OPENFILENAME ofn;
+	CHAR szFile[MAX_PATH];
+	szFile[0] = '\0';
+	/* Pre-populate with the current value */
+	Edit_GetText(GetDlgItem(hDlg, IDC_EDIT_BACKUPFILE), szFile, sizeof(szFile));
+	ZeroMemory(&ofn, sizeof(ofn));
+	ofn.lStructSize  = sizeof(ofn);
+	ofn.hwndOwner    = hDlg;
+	ofn.lpstrFilter  = "VHD Image Files (*.vhd)\0*.vhd\0All Files (*.*)\0*.*\0";
+	ofn.lpstrFile    = szFile;
+	ofn.nMaxFile     = sizeof(szFile);
+	ofn.lpstrDefExt  = "vhd";
+	ofn.Flags        = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY;
+	ofn.lpstrTitle   = "Select Backup VHD File";
+	if (GetSaveFileName(&ofn) != 0)
+	{
+		Edit_SetText(GetDlgItem(hDlg, IDC_EDIT_BACKUPFILE), szFile);
+		bUpdate = TRUE;
+	}
+}
+
+
+/* VHD helper routines for user-mode backup (mirrors the kernel-mode versions in eram.c) */
+
+static ULONG UiVhdSwap32(ULONG x)
+{
+	return ((x & 0xFFUL) << 24)
+		 | ((x & 0xFF00UL) << 8)
+		 | ((x & 0xFF0000UL) >> 8)
+		 | ((x >> 24) & 0xFFUL);
+}
+
+static ULONGLONG UiVhdSwap64(ULONGLONG x)
+{
+	return ((ULONGLONG)UiVhdSwap32((ULONG)(x & 0xFFFFFFFFULL)) << 32)
+		 | (ULONGLONG)UiVhdSwap32((ULONG)(x >> 32));
+}
+
+static ULONG UiVhdComputeGeometry(ULONGLONG diskSize)
+{
+	ULONG totalSectors, spt, heads, cylTimesHeads, cyls;
+	if (diskSize / 512 > 0xFFFFFFFFULL)
+		totalSectors = 0xFFFFFFFFUL;
+	else
+		totalSectors = (ULONG)(diskSize / 512);
+	if (totalSectors > 65535UL * 16UL * 255UL)
+		totalSectors = 65535UL * 16UL * 255UL;
+	if (totalSectors >= 65535UL * 16UL * 63UL)
+	{
+		spt = 255;
+		heads = 16;
+		cylTimesHeads = totalSectors / spt;
+	}
+	else
+	{
+		spt = 17;
+		cylTimesHeads = totalSectors / spt;
+		heads = (cylTimesHeads + 1023) / 1024;
+		if (heads < 4)
+			heads = 4;
+		if (cylTimesHeads >= (ULONG)heads * 1024 || heads > 16)
+		{
+			spt = 31;
+			heads = 16;
+			cylTimesHeads = totalSectors / spt;
+		}
+		if (cylTimesHeads >= (ULONG)heads * 1024)
+		{
+			spt = 63;
+			heads = 16;
+			cylTimesHeads = totalSectors / spt;
+		}
+	}
+	cyls = cylTimesHeads / heads;
+	if (cyls > 65535)
+		cyls = 65535;
+	return UiVhdSwap32(((ULONG)(cyls & 0xFFFF) << 16)
+	                 | ((ULONG)(heads & 0xFF)   << 8)
+	                 |  (ULONG)(spt   & 0xFF));
+}
+
+/* Windows FILETIME value for the VHD epoch (2000-01-01 00:00:00 UTC) */
+#define UI_VHD_EPOCH_FILETIME_OFFSET  (125911584000000000ULL)
+#define UI_VHD_FOOTER_SIZE            (512)
+
+static VOID UiVhdBuildFooter(LPBYTE pFooter, ULONGLONG diskSize)
+{
+	FILETIME   ft;
+	ULONGLONG  sysTime, swapped64;
+	LONGLONG   vhdTimestamp;
+	ULONG      checksum, i, swapped32;
+
+	ZeroMemory(pFooter, UI_VHD_FOOTER_SIZE);
+
+	/* Cookie: "conectix" */
+	pFooter[0]='c'; pFooter[1]='o'; pFooter[2]='n'; pFooter[3]='e';
+	pFooter[4]='c'; pFooter[5]='t'; pFooter[6]='i'; pFooter[7]='x';
+
+	/* Features: 0x00000002 (big-endian) */
+	pFooter[8]=0x00; pFooter[9]=0x00; pFooter[10]=0x00; pFooter[11]=0x02;
+
+	/* File Format Version: 0x00010000 (big-endian) */
+	pFooter[12]=0x00; pFooter[13]=0x01; pFooter[14]=0x00; pFooter[15]=0x00;
+
+	/* Data Offset: 0xFFFFFFFFFFFFFFFF (fixed disk) */
+	pFooter[16]=0xFF; pFooter[17]=0xFF; pFooter[18]=0xFF; pFooter[19]=0xFF;
+	pFooter[20]=0xFF; pFooter[21]=0xFF; pFooter[22]=0xFF; pFooter[23]=0xFF;
+
+	/* TimeStamp: seconds since 2000-01-01 00:00:00 UTC */
+	GetSystemTimeAsFileTime(&ft);
+	sysTime = ((ULONGLONG)ft.dwHighDateTime << 32) | (ULONGLONG)ft.dwLowDateTime;
+	vhdTimestamp = (LONGLONG)((sysTime - UI_VHD_EPOCH_FILETIME_OFFSET) / 10000000ULL);
+	if (vhdTimestamp < 0)            vhdTimestamp = 0;
+	if (vhdTimestamp > 0xFFFFFFFFLL) vhdTimestamp = 0xFFFFFFFFLL;
+	swapped32 = UiVhdSwap32((ULONG)vhdTimestamp);
+	CopyMemory(pFooter + 24, &swapped32, 4);
+
+	/* Creator Application: "win " */
+	pFooter[28]='w'; pFooter[29]='i'; pFooter[30]='n'; pFooter[31]=' ';
+
+	/* Creator Version: 0x000A0000 (big-endian) */
+	pFooter[32]=0x00; pFooter[33]=0x0A; pFooter[34]=0x00; pFooter[35]=0x00;
+
+	/* Creator Host OS: "Wi2k" */
+	pFooter[36]='W'; pFooter[37]='i'; pFooter[38]='2'; pFooter[39]='k';
+
+	/* Original Size (big-endian) */
+	swapped64 = UiVhdSwap64(diskSize);
+	CopyMemory(pFooter + 40, &swapped64, 8);
+
+	/* Current Size (big-endian) */
+	CopyMemory(pFooter + 48, &swapped64, 8);
+
+	/* Disk Geometry (packed CHS, big-endian) */
+	swapped32 = UiVhdComputeGeometry(diskSize);
+	CopyMemory(pFooter + 56, &swapped32, 4);
+
+	/* Disk Type: 2 = fixed (big-endian) */
+	pFooter[60]=0x00; pFooter[61]=0x00; pFooter[62]=0x00; pFooter[63]=0x02;
+
+	/* UniqueId: disk size bytes (8) + "ERAM" + zeros (offset 68..83) */
+	pFooter[68] = (BYTE)(diskSize >> 56);
+	pFooter[69] = (BYTE)(diskSize >> 48);
+	pFooter[70] = (BYTE)(diskSize >> 40);
+	pFooter[71] = (BYTE)(diskSize >> 32);
+	pFooter[72] = (BYTE)(diskSize >> 24);
+	pFooter[73] = (BYTE)(diskSize >> 16);
+	pFooter[74] = (BYTE)(diskSize >>  8);
+	pFooter[75] = (BYTE)(diskSize);
+	pFooter[76]='E'; pFooter[77]='R'; pFooter[78]='A'; pFooter[79]='M';
+
+	/* Checksum: one's complement of the sum of all footer bytes */
+	checksum = 0;
+	for (i = 0; i < UI_VHD_FOOTER_SIZE; i++)
+		checksum += pFooter[i];
+	checksum = ~checksum;
+	swapped32 = UiVhdSwap32(checksum);
+	CopyMemory(pFooter + 64, &swapped32, 4);
+}
+
+
+/* BackupNow
+		Create a VHD image of the running ERAM disk immediately, writing it to
+		the path currently shown in the Backup File edit control.
+	Parameters
+		hDlg		The window handle of the dialog.
+	Return Value
+		None.
+*/
+
+VOID WINAPI BackupNow(HWND hDlg)
+{
+	CHAR szBackupFile[MAX_PATH];
+	CHAR szFullPath[MAX_PATH];
+	CHAR szDrive[3];
+	CHAR szVolume[8];
+	CHAR szMsg[MAX_PATH + 64];
+	CHAR szText[128];
+	HANDLE hDisk = INVALID_HANDLE_VALUE;
+	HANDLE hFile = INVALID_HANDLE_VALUE;
+	LPBYTE pBuffer = NULL;
+	ULONGLONG diskSize = 0;
+	ULONGLONG bytesLeft;
+	DWORD bytesRead, bytesWritten;
+	BYTE footer[UI_VHD_FOOTER_SIZE];
+	BOOL success = FALSE;
+	HCURSOR hOldCursor;
+	DWORD dwErr;
+	int len;
+
+	/* Get the backup file path from the edit control */
+	Edit_GetText(GetDlgItem(hDlg, IDC_EDIT_BACKUPFILE), szBackupFile, sizeof(szBackupFile));
+	if (szBackupFile[0] == '\0')
+	{
+		MessageBox(hDlg, GetResStr(IDS_ERR_BACKUP_NO_FILE, szText, sizeof(szText)), szWinName, MB_OK | MB_ICONEXCLAMATION | MB_SETFOREGROUND);
+		return;
+	}
+
+	/* Expand "X:" (drive-root shorthand) to "X:\ramdisk.vhd", same logic as the driver */
+	lstrcpyn(szFullPath, szBackupFile, sizeof(szFullPath));
+	len = lstrlen(szFullPath);
+	while (len > 2 && szFullPath[len - 1] == '\\')
+	{
+		szFullPath[--len] = '\0';
+	}
+	if (len == 2 && szFullPath[1] == ':')
+	{
+		lstrcat(szFullPath, "\\ramdisk.vhd");
+	}
+
+	/* Get the configured drive letter */
+	ComboBox_GetText(GetDlgItem(hDlg, IDC_COMBO_DRIVE), szDrive, sizeof(szDrive));
+	if (szDrive[0] == '\0')
+		szDrive[0] = 'Z';
+
+	/* Build Win32 volume path "\\\\.\\X:" */
+	wsprintf(szVolume, "\\\\.\\%c:", szDrive[0]);
+
+	/* Show wait cursor while doing I/O */
+	hOldCursor = SetCursor(LoadCursor(NULL, IDC_WAIT));
+
+	/* Open the ERAM volume for raw reading */
+	hDisk = CreateFile(szVolume, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+	if (hDisk == INVALID_HANDLE_VALUE)
+	{
+		SetCursor(hOldCursor);
+		wsprintf(szMsg, GetResStr(IDS_ERR_BACKUP_OPEN_DRIVE, szText, sizeof(szText)), szDrive[0]);
+		MessageBox(hDlg, szMsg, szWinName, MB_OK | MB_ICONEXCLAMATION | MB_SETFOREGROUND);
+		return;
+	}
+
+	/* Determine the disk size */
+	{
+		GET_LENGTH_INFORMATION lenInfo;
+		DWORD dwBytes;
+		if (DeviceIoControl(hDisk, IOCTL_DISK_GET_LENGTH_INFO, NULL, 0, &lenInfo, sizeof(lenInfo), &dwBytes, NULL))
+		{
+			diskSize = (ULONGLONG)lenInfo.Length.QuadPart;
+		}
+	}
+	if (diskSize == 0)
+	{
+		SetCursor(hOldCursor);
+		wsprintf(szMsg, GetResStr(IDS_ERR_BACKUP_OPEN_DRIVE, szText, sizeof(szText)), szDrive[0]);
+		MessageBox(hDlg, szMsg, szWinName, MB_OK | MB_ICONEXCLAMATION | MB_SETFOREGROUND);
+		goto cleanup;
+	}
+
+	/* Create the output VHD file */
+	hFile = CreateFile(szFullPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFile == INVALID_HANDLE_VALUE)
+	{
+		dwErr = GetLastError();
+		SetCursor(hOldCursor);
+		wsprintf(szMsg, GetResStr(IDS_ERR_BACKUP_CREATE_FILE, szText, sizeof(szText)), dwErr);
+		MessageBox(hDlg, szMsg, szWinName, MB_OK | MB_ICONEXCLAMATION | MB_SETFOREGROUND);
+		goto cleanup;
+	}
+
+	/* Allocate read/write buffer */
+	pBuffer = (LPBYTE)VirtualAlloc(NULL, BACKUP_BUFFER_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (pBuffer == NULL)
+	{
+		dwErr = GetLastError();
+		SetCursor(hOldCursor);
+		wsprintf(szMsg, GetResStr(IDS_ERR_BACKUP_READ, szText, sizeof(szText)), dwErr);
+		MessageBox(hDlg, szMsg, szWinName, MB_OK | MB_ICONEXCLAMATION | MB_SETFOREGROUND);
+		goto cleanup;
+	}
+
+	/* Read raw disk data and write to file in BACKUP_BUFFER_SIZE chunks */
+	bytesLeft = diskSize;
+	while (bytesLeft > 0)
+	{
+		DWORD toRead = (bytesLeft >= (ULONGLONG)BACKUP_BUFFER_SIZE) ? (DWORD)BACKUP_BUFFER_SIZE : (DWORD)bytesLeft;
+		if (!ReadFile(hDisk, pBuffer, toRead, &bytesRead, NULL) || bytesRead == 0)
+		{
+			dwErr = GetLastError();
+			SetCursor(hOldCursor);
+			wsprintf(szMsg, GetResStr(IDS_ERR_BACKUP_READ, szText, sizeof(szText)), dwErr);
+			MessageBox(hDlg, szMsg, szWinName, MB_OK | MB_ICONEXCLAMATION | MB_SETFOREGROUND);
+			goto cleanup;
+		}
+		if (!WriteFile(hFile, pBuffer, bytesRead, &bytesWritten, NULL) || bytesWritten != bytesRead)
+		{
+			dwErr = GetLastError();
+			SetCursor(hOldCursor);
+			wsprintf(szMsg, GetResStr(IDS_ERR_BACKUP_WRITE, szText, sizeof(szText)), dwErr);
+			MessageBox(hDlg, szMsg, szWinName, MB_OK | MB_ICONEXCLAMATION | MB_SETFOREGROUND);
+			goto cleanup;
+		}
+		bytesLeft -= bytesRead;
+	}
+
+	/* Append the 512-byte VHD fixed-disk footer */
+	UiVhdBuildFooter(footer, diskSize);
+	if (!WriteFile(hFile, footer, UI_VHD_FOOTER_SIZE, &bytesWritten, NULL) || bytesWritten != UI_VHD_FOOTER_SIZE)
+	{
+		dwErr = GetLastError();
+		SetCursor(hOldCursor);
+		wsprintf(szMsg, GetResStr(IDS_ERR_BACKUP_WRITE, szText, sizeof(szText)), dwErr);
+		MessageBox(hDlg, szMsg, szWinName, MB_OK | MB_ICONEXCLAMATION | MB_SETFOREGROUND);
+		goto cleanup;
+	}
+
+	success = TRUE;
+	SetCursor(hOldCursor);
+
+cleanup:
+	if (pBuffer != NULL)
+		VirtualFree(pBuffer, 0, MEM_RELEASE);
+	if (hFile != INVALID_HANDLE_VALUE)
+	{
+		CloseHandle(hFile);
+		if (!success)
+			DeleteFile(szFullPath);	/* remove partial/failed output file */
+	}
+	if (hDisk != INVALID_HANDLE_VALUE)
+		CloseHandle(hDisk);
+
+	if (success)
+	{
+		MessageBox(hDlg, GetResStr(IDS_BACKUP_NOW_SUCCESS, szText, sizeof(szText)), szWinName, MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+	}
 }
 
 

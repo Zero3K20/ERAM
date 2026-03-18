@@ -47,7 +47,7 @@ LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 // Dialog
 //
 
-IDD_SETUP DIALOG DISCARDABLE  0, 0, 189, 268
+IDD_SETUP DIALOG DISCARDABLE  0, 0, 189, 288
 STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "ERAM Configuration"
 FONT 8, "Microsoft Sans Serif"
@@ -78,15 +78,17 @@ BEGIN
     CONTROL         "Report to OS",IDC_CHECK_REPORTUSAGE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,95,170,75,10
     CONTROL         "Local device",IDC_CHECK_LOCAL_DISK,"Button",BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP,15,190,70,10
     CONTROL         "Make TEMP Directory",IDC_CHECK_MAKE_TEMP,"Button",BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP,95,190,86,10
-    GROUPBOX        " Backup ",IDC_STATIC,5,205,175,50,WS_GROUP
+    GROUPBOX        " Backup (VHD) ",IDC_STATIC,5,205,175,70,WS_GROUP
     LTEXT           "Backup File(&B):",IDC_STATIC_BACKUP_FILE,15,218,55,8
-    EDITTEXT        IDC_EDIT_BACKUPFILE,73,216,100,12,ES_AUTOHSCROLL
+    EDITTEXT        IDC_EDIT_BACKUPFILE,73,216,72,12,ES_AUTOHSCROLL
+    PUSHBUTTON      "...",IDC_BTN_BROWSE_BACKUP,148,215,23,14
     LTEXT           "Daily Time(&T):",IDC_STATIC_BACKUP_INTERVAL,15,234,55,8
     EDITTEXT        IDC_EDIT_BACKUP_INTERVAL,73,232,30,12,ES_AUTOHSCROLL
     LTEXT           "(HH:MM, blank=off)",IDC_STATIC_BACKUP_MINUTES,108,234,65,16
-    DEFPUSHBUTTON   "Ok",IDOK,75,248,30,15,WS_GROUP
-    PUSHBUTTON      "Cancel",IDCANCEL,110,248,30,15
-    PUSHBUTTON      "Modify",IDC_UPDATE,145,248,30,15
+    PUSHBUTTON      "Backup Now",IDC_BTN_BACKUP_NOW,73,250,100,14
+    DEFPUSHBUTTON   "Ok",IDOK,75,268,30,15,WS_GROUP
+    PUSHBUTTON      "Cancel",IDCANCEL,110,268,30,15
+    PUSHBUTTON      "Modify",IDC_UPDATE,145,268,30,15
 END
 
 
@@ -204,6 +206,16 @@ BEGIN
     IDS_WARN_LIMIT_MAX_SIZE "The address space is being overflowed, please limit the disk size to %dKB."
     IDS_WARN_LIMIT_ROOTDIR  "The configured disk size is too small. The Root Dir Entries option has been reset to its default setting."
     IDS_ERR_INVALID_BACKUP_TIME "Invalid backup time. Please enter a time in HH:MM format (e.g. 03:00), or leave blank to disable."
+END
+
+STRINGTABLE DISCARDABLE 
+BEGIN
+    IDS_BACKUP_NOW_SUCCESS      "VHD image created successfully."
+    IDS_ERR_BACKUP_NO_FILE      "Please specify a backup file path."
+    IDS_ERR_BACKUP_OPEN_DRIVE   "Could not open ERAM drive (%c:). Make sure ERAM is running."
+    IDS_ERR_BACKUP_CREATE_FILE  "Could not create backup file (%d)."
+    IDS_ERR_BACKUP_READ         "Error reading from ERAM drive (%d)."
+    IDS_ERR_BACKUP_WRITE        "Error writing to backup file (%d)."
 END
 
 #endif    // English (U.S.) resources
