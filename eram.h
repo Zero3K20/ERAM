@@ -79,6 +79,37 @@ typedef VOID (*ERAM_UNMAP)(PVOID);
 #define	BIOS_SIZE			((DWORD)(BIOS_ADDRESS_END - BIOS_ADDRESS_START + 1))
 #define BACKUP_CHUNK_SIZE	((ULONG)0x20000000)	/* 512MB: max bytes per ZwReadFile/ZwWriteFile call */
 
+/* Size of the VHD fixed-disk footer appended after the raw disk data */
+#define VHD_FOOTER_SIZE		(512)
+
+/* Windows FILETIME value for the VHD epoch (2000-01-01 00:00:00 UTC).
+   Used to convert KeQuerySystemTime output to VHD-spec seconds. */
+#define VHD_EPOCH_FILETIME_OFFSET	(125911584000000000LL)
+
+/* VHD fixed-disk footer layout (512 bytes; all multi-byte fields big-endian).
+   Written at the end of every backup file so the image can be mounted
+   directly as a .vhd by Windows Disk Management or Hyper-V.
+   The struct is packed because the whole header is compiled under the
+   file-level #pragma pack(1) that precedes all struct definitions here. */
+typedef struct {
+	BYTE		Cookie[8];			/* "conectix" */
+	ULONG		Features;			/* 0x00000002 */
+	ULONG		FileFormatVersion;	/* 0x00010000 */
+	ULONGLONG	DataOffset;			/* 0xFFFFFFFFFFFFFFFF for fixed disk */
+	ULONG		TimeStamp;			/* seconds since 2000-01-01 00:00:00 UTC */
+	BYTE		CreatorApp[4];		/* "win " */
+	ULONG		CreatorVersion;		/* 0x000A0000 */
+	BYTE		CreatorHostOs[4];	/* "Wi2k" */
+	ULONGLONG	OriginalSize;		/* disk size in bytes */
+	ULONGLONG	CurrentSize;		/* disk size in bytes */
+	ULONG		DiskGeometry;		/* packed CHS: cyls(16)|heads(8)|spt(8) */
+	ULONG		DiskType;			/* 2 = fixed */
+	ULONG		Checksum;			/* one's complement of sum of footer bytes */
+	BYTE		UniqueId[16];		/* pseudo-UUID */
+	BYTE		SavedState;			/* 0 */
+	BYTE		Reserved[427];		/* zeros */
+} VHD_FOOTER, *PVHD_FOOTER;
+
 /* BPB array (FAT12,16) */
 typedef	struct {
 	WORD	wNumSectorByte;		// The number of sector bytes (BPB, =SECTOR)
