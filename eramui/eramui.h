@@ -65,7 +65,16 @@
 #define IDC_STATIC_BACKUP_FILE          1017
 #define IDC_STATIC_BACKUP_INTERVAL      1018
 #define IDC_STATIC_BACKUP_MINUTES       1019
+#define IDC_BTN_BROWSE_BACKUP           1020
+#define IDC_BTN_BACKUP_NOW              1021
 #define IDC_STATIC                      -1
+
+#define IDS_BACKUP_NOW_SUCCESS          37
+#define IDS_ERR_BACKUP_NO_FILE          38
+#define IDS_ERR_BACKUP_OPEN_DRIVE       39
+#define IDS_ERR_BACKUP_CREATE_FILE      40
+#define IDS_ERR_BACKUP_READ             41
+#define IDS_ERR_BACKUP_WRITE            42
 
 // Next default values for new objects
 // 
@@ -75,7 +84,7 @@
 #define _APS_3D_CONTROLS                     1
 #define _APS_NEXT_RESOURCE_VALUE        109
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1015
+#define _APS_NEXT_CONTROL_VALUE         1022
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

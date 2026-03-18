@@ -127,7 +127,7 @@
       <SubSystem>Windows</SubSystem>
       <OutputFile>Release\x86\eram.cpl</OutputFile>
       <ImportLibrary>.\Release\eram.lib</ImportLibrary>
-      <AdditionalDependencies>setupapi.lib;Comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>setupapi.lib;Comctl32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>.\eramui.def</ModuleDefinitionFile>
     </Link>
   </ItemDefinitionGroup>
@@ -168,7 +168,7 @@
       <SubSystem>Windows</SubSystem>
       <OutputFile>Release\x64\eram.cpl</OutputFile>
       <ImportLibrary>.\Release\eram.lib</ImportLibrary>
-      <AdditionalDependencies>setupapi.lib;Comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>setupapi.lib;Comctl32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>.\eramui.def</ModuleDefinitionFile>
     </Link>
   </ItemDefinitionGroup>
@@ -211,7 +211,7 @@
       <SubSystem>Windows</SubSystem>
       <OutputFile>Debug\x86\eram.cpl</OutputFile>
       <ImportLibrary>.\Debug\eram.lib</ImportLibrary>
-      <AdditionalDependencies>setupapi.lib;Comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>setupapi.lib;Comctl32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>.\eramui.def</ModuleDefinitionFile>
       <AdditionalOptions>/VERBOSE %(AdditionalOptions)</AdditionalOptions>
     </Link>
@@ -254,7 +254,7 @@
       <SubSystem>Windows</SubSystem>
       <OutputFile>Debug\x64\eram.cpl</OutputFile>
       <ImportLibrary>.\Debug\eram.lib</ImportLibrary>
-      <AdditionalDependencies>setupapi.lib;Comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>setupapi.lib;Comctl32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>.\eramui.def</ModuleDefinitionFile>
       <AdditionalOptions>/VERBOSE %(AdditionalOptions)</AdditionalOptions>
     </Link>
